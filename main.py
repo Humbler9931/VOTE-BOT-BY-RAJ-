@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,7 +17,7 @@ POLL_IMAGE_URL = os.getenv("POLL_IMAGE_URL", None)
 CHANNELS_DB = {}  # {user_id: [channel_ids]}
 POLLS_DB = {}     # {poll_id: {channel_id, message_id, creator_id, votes, is_active}}
 
-# --- HELPER ---
+# --- UPDATE POLL ---
 async def update_poll_message(context: ContextTypes.DEFAULT_TYPE, poll_id: str):
     poll = POLLS_DB.get(poll_id)
     if not poll:
@@ -40,7 +41,7 @@ async def update_poll_message(context: ContextTypes.DEFAULT_TYPE, poll_id: str):
     except:
         pass
 
-# --- COMMAND ---
+# --- /start COMMAND ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     payload = context.args[0] if context.args else None
@@ -94,7 +95,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
-# --- CALLBACK ---
+# --- BUTTON HANDLER ---
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -127,7 +128,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update_poll_message(context, poll_id)
         await query.answer("Your vote counted!")
 
-# --- MESSAGE HANDLER ---
+# --- CHANNEL SETUP HANDLER ---
 async def channel_setup_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('waiting_channel'):
         channel_input = update.message.text.strip()
@@ -155,5 +156,4 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
