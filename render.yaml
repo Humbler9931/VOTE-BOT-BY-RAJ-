@@ -1,0 +1,17 @@
+services:
+  - type: web # Render isse hamesha chalta rakhega (24/7)
+    name: advanced-telegram-bot
+    env: python
+    plan: free 
+    
+    buildCommand: "pip install -r requirements.txt"
+    
+    # Polling mode ke liye, hum sirf main.py ko execute karte hain.
+    # Koi PORT ki zaroorat nahi.
+    startCommand: "python main.py"
+    
+    envVars:
+      - key: BOT_TOKEN
+        value: YOUR_TELEGRAM_BOT_TOKEN_HERE
+      - key: POLL_IMAGE_URL
+        value: YOUR_DIRECT_IMAGE_URL_HERE
