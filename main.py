@@ -3,8 +3,8 @@ import uuid
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
 )
 
 # --- ENV ---
@@ -12,7 +12,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 POLL_IMAGE_URL = os.getenv("POLL_IMAGE_URL", None)
 
-# --- IN-MEMORY DATABASE ---
+# --- IN-MEMORY DB ---
 CHANNELS_DB = {}  # {user_id: [channel_ids]}
 POLLS_DB = {}     # {poll_id: {channel_id, message_id, creator_id, votes, is_active}}
 
@@ -123,7 +123,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Only channel subscribers can vote!", show_alert=True)
             return
 
-        # Simple yes vote
         poll['votes']['yes'] = poll['votes'].get('yes',0)+1
         await update_poll_message(context, poll_id)
         await query.answer("Your vote counted!")
@@ -148,12 +147,13 @@ async def channel_setup_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text("❌ Invalid channel or bot not admin.")
 
 # --- MAIN ---
-def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), channel_setup_handler))
-    application.run_polling()
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), channel_setup_handler))
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
