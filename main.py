@@ -9,9 +9,9 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Agar URL fail ho toh file_id use karein
 POLL_IMAGE_URL = os.getenv("POLL_IMAGE_URL", None) 
-# POLL_IMAGE_FILE_ID = os.getenv("POLL_IMAGE_FILE_ID", None) # File ID ke liye backup
+# Agar aap chahein to POLL_IMAGE_FILE_ID bhi use kar sakte hain
+# POLL_IMAGE_FILE_ID = os.getenv("POLL_IMAGE_FILE_ID", None)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -20,22 +20,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Mock Database (ADVANCED LOGIC KE LIYE ZAROORI)
-MOCK_DB_VOTES = {} # {poll_id: {user_id: vote_option}}
-MOCK_DB_CHANNELS = {} # {user_id: [channel_id, ...]}
-MOCK_DB_POLLS = {} # {poll_id: {channel_id: ..., message_id: ..., vote_options: [...], creator_id: ...}}
-
+MOCK_DB_VOTES = {} 
+MOCK_DB_CHANNELS = {} 
+MOCK_DB_POLLS = {} # Added 'is_active': True/False for stop voting
 
 # --- 1.1 HELPER FUNCTIONS ---
 
 def get_poll_results(poll_id: str) -> dict:
-    """Calculates vote counts for a specific poll from MOCK_DB_VOTES."""
+    """Calculates vote counts for a specific poll."""
     votes_data = MOCK_DB_VOTES.get(poll_id, {})
     results = {}
-    
     poll_info = MOCK_DB_POLLS.get(poll_id)
     if not poll_info:
         return {}
-        
+    
     for option in poll_info['vote_options']:
         results[option] = 0
         
@@ -54,19 +52,21 @@ async def update_poll_message(context, poll_id: str) -> None:
 
     results = get_poll_results(poll_id)
     total_votes = sum(results.values())
+    is_active = poll_info.get('is_active', True)
     
-    # Get creator details for the post caption (Participant Details)
-    # NOTE: API call can sometimes fail if the user privacy settings are strict.
+    # Get creator details (Fallback for errors)
     try:
         creator = await context.bot.get_chat(poll_info['creator_id'])
     except Exception:
-        # Fallback if chat details can't be fetched
         creator = type('CreatorMock', (object,), {'full_name': 'Unknown User', 'id': poll_info['creator_id'], 'username': 'N/A'})
     
-    
-    # ⚡ CAPTION (Image jaisa format) ⚡
+    # ⚡ CAPTION taiyar karna (Image jaisa format) ⚡
+    status_text = ""
+    if not is_active:
+        status_text = "🔒 **VOTING HAS ENDED!**\n"
+        
     caption_template = (
-        "**VOTE BOT**\n\n"
+        f"{status_text}**VOTE BOT**\n\n"
         "[*⚡*] **PARTICIPANT DETAILS** [*⚡*]\n"
         "► USER: `{full_name}`\n"
         "► USER-ID: `{user_id}`\n"
@@ -88,21 +88,33 @@ async def update_poll_message(context, poll_id: str) -> None:
     # Current Vote Count
     vote_count_text = f"\n\n**{total_votes}** ⚡"
     
-    # Recreate the keyboard with current vote counts on buttons
+    # Recreate the keyboard 
     keyboard = []
-    for option in poll_info['vote_options']:
-        callback_data = f'vote_{poll_id}_{option}' 
-        count_display = results.get(option, 0)
-        keyboard.append([InlineKeyboardButton(f"{option} ({count_display} Votes)", callback_data=callback_data)])
+    
+    if is_active:
+        # Voting buttons
+        for option in poll_info['vote_options']:
+            callback_data = f'vote_{poll_id}_{option}' 
+            count_display = results.get(option, 0)
+            keyboard.append([InlineKeyboardButton(f"{option} ({count_display} Votes)", callback_data=callback_data)])
+        
+        # ADVANCED FEATURE: Creator's Stop Voting Button
+        # Button data format: stopvote_POLLID
+        keyboard.append([InlineKeyboardButton("🛑 Stop Voting (Only Creator)", callback_data=f'stopvote_{poll_id}')])
+    else:
+        # Results buttons after voting stops
+        for option in poll_info['vote_options']:
+            count_display = results.get(option, 0)
+            keyboard.append([InlineKeyboardButton(f"✅ {option}: {count_display} Votes", callback_data='ignore')])
         
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        # Agar aapne POLL_IMAGE_URL/FILE_ID se send_photo kiya hai, toh aapko edit_message_caption hi use karna hoga
+        # Edit the message caption (Photo caption ko edit karna)
         await context.bot.edit_message_caption(
             chat_id=poll_info['channel_id'],
             message_id=poll_info['message_id'],
-            caption=caption + vote_count_text, # Main caption + final vote count
+            caption=caption + vote_count_text, 
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
@@ -120,8 +132,6 @@ async def start_command(update: Update, context) -> None:
     if payload and payload.startswith('create_poll_'):
         try:
             channel_id = int(payload.split('_')[2])
-            
-            # Check if this user has connected this channel
             if channel_id in MOCK_DB_CHANNELS.get(user_id, []):
                 await create_poll_message(update, context, channel_id)
                 return
@@ -130,11 +140,10 @@ async def start_command(update: Update, context) -> None:
                     "🚨 Aapne yeh channel abhi tak connect nahi kiya hai ya main admin nahi hoon. "
                     "Pehle '🔗 Connect Your Channel' button par click karein."
                 )
-                
         except (ValueError, IndexError):
             pass 
     
-    # Default Welcome Message (IMAGE ke saath)
+    # Default Welcome Message 
     welcome_text = (
         "⚡ *Welcome to the Advanced Vote Bot!* ⚡\n\n"
         "Yahan aap apne channel ke liye *subscriber-only* polls bana sakte hain. "
@@ -154,15 +163,13 @@ async def start_command(update: Update, context) -> None:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Image ya URL use karke welcome message bhejna
     if POLL_IMAGE_URL:
          await update.message.reply_photo(
-             photo=POLL_IMAGE_URL, # Yahan URL use kiya gaya hai
+             photo=POLL_IMAGE_URL, 
              caption=welcome_text, 
              parse_mode='Markdown', 
              reply_markup=reply_markup
          )
-    # NOTE: Agar aap file_id use kar rahe hain toh 'elif POLL_IMAGE_FILE_ID:' add karein
     else:
          await update.message.reply_text(
              welcome_text,
@@ -175,14 +182,15 @@ async def start_command(update: Update, context) -> None:
 async def button_handler(update: Update, context) -> None:
     """Handles all inline button clicks."""
     query = update.callback_query
-    await query.answer()
     user_id = query.from_user.id
     data = query.data
     
+    await query.answer() # Notification/loading indicator clear karna
+
     if data == 'connect_channel':
         await query.edit_message_text(
             "Apne channel ka username ya ID bhejo jismein aap mujhe (bot ko) *Admin* bana chuke hain "
-            "(*Post/Edit/Delete messages* aur *Invite via Link* permissions ke saath). **Note**: Is step mein, hum sabhi channels ki list nahi de sakte, isliye seedha username/ID bhejne ko kaha gaya hai."
+            "(*Post/Edit/Delete messages* aur *Invite via Link* permissions ke saath)."
         )
         context.user_data['waiting_for_channel'] = True
 
@@ -192,13 +200,17 @@ async def button_handler(update: Update, context) -> None:
         poll_id = parts[1]
         vote_option = parts[2]
         poll_info = MOCK_DB_POLLS.get(poll_id)
+        
+        if not poll_info or not poll_info.get('is_active', True):
+             await query.answer("🚨 Voting is closed for this poll!", show_alert=True)
+             return
             
         channel_id = poll_info['channel_id']
         
         # 1. Subscriber Check (API CALL)
         member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
         if member.status not in ('member', 'administrator', 'creator'):
-            await query.answer("🚨 Vote sirf channel members ke liye hai! Pehle channel join karein.", show_alert=True)
+            await query.answer("🚨 Vote sirf channel members ke liye hai!", show_alert=True)
             return
 
         # 2. Update Vote
@@ -207,13 +219,30 @@ async def button_handler(update: Update, context) -> None:
         
         # 3. Update the Poll Message
         await update_poll_message(context, poll_id)
-        
         await query.answer(f"Aapka vote '{vote_option}' darj kiya gaya.")
     
-    elif data.startswith('create_poll_'):
-        channel_id = int(data.split('_')[2])
-        await create_poll_message(update, context, channel_id)
+    elif data.startswith('stopvote_'):
+        # ADVANCED FEATURE: Stop Voting logic
+        poll_id = data.split('_')[1]
+        poll_info = MOCK_DB_POLLS.get(poll_id)
+        
+        if not poll_info:
+            await query.answer("Poll not found.", show_alert=True)
+            return
 
+        # Authorization check: Only creator can stop voting
+        if poll_info['creator_id'] != user_id:
+            await query.answer("❌ Aap voting nahi rok sakte. Sirf poll creator hi rok sakta hai.", show_alert=True)
+            return
+        
+        # Stop voting and update poll status
+        MOCK_DB_POLLS[poll_id]['is_active'] = False
+        await update_poll_message(context, poll_id)
+        
+        await query.answer("Voting successfully rok di gayi hai! Poll band ho chuka hai.", show_alert=True)
+        
+    elif data == 'ignore':
+        await query.answer("Voting band hai, yeh sirf result button hai.")
 
 # --- 4. MESSAGE HANDLERS ---
 
@@ -238,14 +267,14 @@ async def channel_setup_handler(update: Update, context) -> None:
                 MOCK_DB_CHANNELS.setdefault(user_id, []).append(channel_id)
             context.user_data['waiting_for_channel'] = False
             
-            # Channel connect hone par deep-link dena
+            # Deep-link generation
             create_link = f"https://t.me/{context.bot.username}?start=create_poll_{channel_id}"
 
             await update.message.reply_text(
                 "✅ Channel successfully **connect** ho gaya!\n\n"
-                "**Post banane ke liye link** (Link par click karte hi post channel mein chala jayega):\n"
+                "**Post banane ke liye link**:\n"
                 f"`{create_link}`\n\n"
-                "Is link ko copy karein aur apne paas save kar lein."
+                "Is link par click karte hi poll post channel mein chala jayega."
             )
             
         except Exception as e:
@@ -260,7 +289,7 @@ async def create_poll_message(update: Update, context, channel_id: int) -> None:
     vote_options = ["I Support", "I Oppose", "Neutral"]
     creator = update.effective_user
     
-    # ⚡ CAPTION taiyar karna
+    # ⚡ CAPTION taiyar karna (Dynamic details)
     caption_template = (
         "**VOTE BOT**\n\n"
         "[*⚡*] **PARTICIPANT DETAILS** [*⚡*]\n"
@@ -279,27 +308,27 @@ async def create_poll_message(update: Update, context, channel_id: int) -> None:
         bot_username=context.bot.username
     )
     
-    # Initial Keyboard (0 Votes ke saath)
+    # Initial Keyboard (0 Votes + Stop Voting button)
     keyboard = []
     for option in vote_options:
         callback_data = f'vote_{poll_id}_{option}' 
         keyboard.append([InlineKeyboardButton(f"{option} (0 Votes)", callback_data=callback_data)])
         
+    # ADVANCED FEATURE: Stop Voting Button for Creator
+    keyboard.append([InlineKeyboardButton("🛑 Stop Voting (Only Creator)", callback_data=f'stopvote_{poll_id}')])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     try:
-        # Send the message with Image/Text (using URL or File ID)
+        # Send the message with Image/Text
         if POLL_IMAGE_URL:
             sent_message = await context.bot.send_photo(
                 chat_id=channel_id,
-                photo=POLL_IMAGE_URL, # Yahan URL use kiya gaya hai
+                photo=POLL_IMAGE_URL,
                 caption=caption + "\n\n**0** ⚡", 
                 parse_mode='Markdown',
                 reply_markup=reply_markup
             )
-        # NOTE: Agar aapke paas file_id ho toh aap ise use kar sakte hain:
-        # elif POLL_IMAGE_FILE_ID:
-        #     sent_message = await context.bot.send_photo(...)
         else:
              sent_message = await context.bot.send_message(
                 chat_id=channel_id,
@@ -308,12 +337,13 @@ async def create_poll_message(update: Update, context, channel_id: int) -> None:
                 reply_markup=reply_markup
             )
         
-        # Save Poll Data to DB (MOCK)
+        # 5. Save Poll Data to DB (MOCK)
         MOCK_DB_POLLS[poll_id] = {
             'channel_id': channel_id,
             'message_id': sent_message.message_id,
             'vote_options': vote_options,
-            'creator_id': creator.id
+            'creator_id': creator.id,
+            'is_active': True # New status field
         }
         
         await context.bot.send_message(
@@ -325,7 +355,7 @@ async def create_poll_message(update: Update, context, channel_id: int) -> None:
         logger.error(f"Failed to post poll: {e}")
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"❌ Poll publish karte samay error hua. Ensure the Bot is an Admin in the channel with Post/Edit permissions."
+            text=f"❌ Poll publish karte samay error hua. Ensure the Bot is an Admin with Post/Edit permissions."
         )
 
 
@@ -343,7 +373,6 @@ async def handle_chat_members_update(update: Update, context) -> None:
         
         logger.info(f"User {user_id} left channel {channel_id}. Revoking votes...")
         
-        # Find all polls related to this channel and remove the user's vote
         for poll_id, poll_info in list(MOCK_DB_POLLS.items()):
             if poll_info['channel_id'] == channel_id:
                 votes = MOCK_DB_VOTES.get(poll_id, {})
@@ -359,7 +388,10 @@ async def handle_chat_members_update(update: Update, context) -> None:
 # --- 6. MAIN FUNCTION ---
 
 def main() -> None:
-    """Start the bot."""
+    """Start the bot using polling mode (V20 standard)."""
+    
+    # 🚨 FIX: Application.builder() is the correct V20 structure. 
+    # Purane 'updater' method se bachein.
     application = Application.builder().token(BOT_TOKEN).build()
 
     # Handlers
@@ -372,7 +404,10 @@ def main() -> None:
         ChatMemberHandler(handle_chat_members_update, ChatMemberHandler.CHATMEMBER)
     )
 
+    # Polling mode: Render/V20 ke liye PORT ki zaroorat nahi.
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
+    # 🚨 FIX: Agar aapka purana code main function ko '_main' se chala raha tha, 
+    # toh ise '__main__' karein
     main()
