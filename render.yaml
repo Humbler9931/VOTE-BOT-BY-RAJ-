@@ -1,17 +1,16 @@
 services:
-  - type: web # Render isse hamesha chalta rakhega (24/7)
-    name: advanced-telegram-bot
+  - type: web
+    name: telegram-vote-bot
     env: python
-    plan: free 
-    
-    buildCommand: "pip install -r requirements.txt"
-    
-    # Polling mode ke liye, hum sirf main.py ko execute karte hain.
-    # Koi PORT ki zaroorat nahi.
-    startCommand: "python main.py"
-    
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
     envVars:
-      - key: BOT_TOKEN
-        value: YOUR_TELEGRAM_BOT_TOKEN_HERE
-      - key: POLL_IMAGE_URL
-        value: YOUR_DIRECT_IMAGE_URL_HERE
+      - key: TELEGRAM_BOT_TOKEN
+        value: "APNA_BOT_TOKEN_YAHA_DALO"
+      - key: BOT_USERNAME
+        value: "PyVoteBot"
+      - key: ADMIN_IDS
+        value: "123456789,987654321"
+      - key: LOG_CHANNEL_ID
+        value: "-100XXXXXXXXXXXXXXXX"
