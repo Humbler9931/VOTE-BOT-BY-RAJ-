@@ -3,7 +3,6 @@ import logging
 import json
 import uuid
 import aiosqlite
-import asyncio # For stylish delays
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -24,9 +23,12 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(',') if i.strip()]
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 8080)) # Default to 8080 if not set
 
-if not TELEGRAM_BOT_TOKEN or not BOT_USERNAME:
-    raise ValueError("TELEGRAM_BOT_TOKEN and BOT_USERNAME must be set in .env")
+# Check for essential variables
+if not TELEGRAM_BOT_TOKEN or not BOT_USERNAME or not WEBHOOK_URL:
+    raise ValueError("TELEGRAM_BOT_TOKEN, BOT_USERNAME, and WEBHOOK_URL must be set in .env")
 
 # Logging setup
 logging.basicConfig(
@@ -35,22 +37,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# State constants for ConversationHandler (New State Added: GET_IMAGE_URL)
+# State constants for ConversationHandler
 SELECT_CHANNEL, GET_IMAGE_URL, GET_DETAILS, FINISH_GIVEAWAY = range(4)
-BROADCAST_MESSAGE = 99 # Separate state for broadcast
+BROADCAST_MESSAGE = 99 
 DB_FILE = "advanced_giveaway_bot.db"
 
 # In-memory storage for giveaway creation state
 GIVEAWAY_CREATION_DATA = {} 
 
-# Global Image URL (Aapki maang ke anusaar, lekin ise har poll ke liye DB mein save karna better hai)
+# Default Image URL (Using the one you provided for stylish start message)
 DEFAULT_GIVEAWAY_IMAGE = "https://envs.sh/GhJ.jpg/IMG20250925634.jpg" 
 
 # ----------------------------------------------------------------------
 # 2. Database Functions (Asynchronous)
 # ----------------------------------------------------------------------
 
-# (init_db, save_giveaway, get_giveaway_by_id, log_participant, get_top_participants functions are kept the same)
+# NOTE: Database functions (init_db, save_giveaway, get_giveaway_by_id, log_participant, 
+# get_top_participants, get_all_active_giveaways, get_all_participants_for_giveaway, close_giveaway_db) 
+# are UNCHANGED from the previous advanced version and are assumed to be correct.
+
+# --- [DATABASE FUNCTIONS CODE HERE] ---
 
 async def init_db():
     """Initializes the database and creates necessary tables (Updated to save image_url)."""
@@ -138,7 +144,8 @@ async def close_giveaway_db(giveaway_id: str):
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("UPDATE giveaways SET is_active = 0 WHERE giveaway_id = ?", (giveaway_id,))
         await db.commit()
-        
+# --- [END DATABASE FUNCTIONS CODE] ---
+
 # ----------------------------------------------------------------------
 # 3. Utility Functions & Formatters (Stylish)
 # ----------------------------------------------------------------------
@@ -230,7 +237,7 @@ async def start_giveaway(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     GIVEAWAY_CREATION_DATA[user_id] = {} 
     
     await update.message.reply_text(
-        "🎁 <b>STEP 1/4: Channel Selection</b>\n\n"
+        "🎁 <b>STEP 1/3: Channel Selection</b>\n\n"
         "Please **forward a message** from the channel or **share the channel link/username** where the giveaway will run.",
         parse_mode=ParseMode.HTML
     )
@@ -258,7 +265,7 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
     channel_title = channel.title
     
     message = await update.message.reply_text(f"⏳ **Verifying admin status in {channel_title}...**", parse_mode='Markdown')
-    await asyncio.sleep(1)
+    # Removed asyncio.sleep(1) for cleaner deployment on constrained environments
     
     if not await check_bot_admin_status(context.bot, channel_id):
         await message.edit_text(
@@ -278,7 +285,7 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # New Step: Image URL
     await update.message.reply_text(
-        f"🖼️ <b>STEP 2/4: Image URL</b>\n\n"
+        f"🖼️ <b>STEP 2/3: Image URL</b>\n\n"
         f"Please send the **Public URL** for the image you want to use in the giveaway post.\n"
         f"<i>(e.g., {DEFAULT_GIVEAWAY_IMAGE})</i>",
         parse_mode=ParseMode.HTML
@@ -290,7 +297,7 @@ async def get_image_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     user_id = update.effective_user.id
     image_url = update.message.text.strip()
     
-    # Basic URL validation (In a real scenario, you'd check for image headers)
+    # Basic URL validation
     if not image_url.startswith('http'):
         await update.message.reply_text("❌ Invalid URL. Please provide a full public URL starting with 'http' or 'https'.")
         return GET_IMAGE_URL
@@ -300,7 +307,7 @@ async def get_image_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     # Proceed to final step
     await update.message.reply_text(
         f"🎉 **Image URL Saved!**\n\n"
-        "**STEP 3/4: Launch!**\n"
+        "**STEP 3/3: Launch!**\n"
         "The bot will automatically generate the Participation Link. Just send **'LAUNCH'** to finalize the vote-poll creation.",
         parse_mode='Markdown'
     )
@@ -323,7 +330,7 @@ async def handle_details_and_publish(update: Update, context: ContextTypes.DEFAU
     channel_id = data['channel_id']
     channel_title = data['channel_title']
     giveaway_id = data['giveaway_id']
-    image_url = data['image_url'] # Use the newly captured image URL
+    image_url = data['image_url']
 
     # 1. Save giveaway to DB
     await save_giveaway(giveaway_id, channel_id, user_id, image_url)
@@ -476,14 +483,12 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not is_admin(update.effective_user.id):
         return
         
-    # Extract giveaway ID from command args or inline data
     if update.callback_query:
         query = update.callback_query
         await query.answer("Closing poll...")
         giveaway_id = query.data.split('|')[1]
         source_chat = query.message.chat
     else:
-        # Command format: /close_poll_GIVEAWAYID
         if not context.args and '_' not in update.message.text:
             await update.message.reply_text("❌ Invalid command format. Use /close_poll_GIVEAWAYID.")
             return
@@ -491,7 +496,6 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         giveaway_id = update.message.text.split('_')[1]
         source_chat = update.message.chat
 
-    # Check if poll is active
     giveaway_data = await get_giveaway_by_id(giveaway_id)
     if not giveaway_data or not giveaway_data['is_active']:
         await context.bot.send_message(source_chat.id, f"❌ Poll <code>{giveaway_id}</code> is already closed or does not exist.", parse_mode=ParseMode.HTML)
@@ -499,22 +503,20 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await close_giveaway_db(giveaway_id)
     
-    # Optional: Announce closure in the channel (requires getting channel title)
     channel_id = giveaway_data['channel_id']
     try:
         channel_info = await context.bot.get_chat(channel_id)
         await context.bot.send_message(channel_id, f"🛑 <b>GIVEAWAY CLOSED!</b>\n\nVote-Poll ID <code>{giveaway_id}</code> has been officially closed by the admin.", parse_mode=ParseMode.HTML)
     except TelegramError:
-        pass # Ignore if bot can't send to channel
+        pass
 
     await context.bot.send_message(source_chat.id, f"✅ Poll <code>{giveaway_id}</code> successfully **CLOSED**.", parse_mode=ParseMode.HTML)
 
 async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the /broadcast conversation (Admin Only)."""
     if not is_admin(update.effective_user.id):
-        return
+        return ConversationHandler.END
         
-    # Admin must specify giveaway ID to broadcast to its participants
     if not context.args:
         await update.message.reply_text("❌ Please specify the giveaway ID: `/broadcast GIVEAWAY_ID`", parse_mode='Markdown')
         return ConversationHandler.END
@@ -550,24 +552,23 @@ async def perform_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     for user_id in participants:
         try:
+            # Check for media first
             if update.message.photo or update.message.video or update.message.animation:
-                # Send media (photo, video, gif)
                 if update.message.photo:
-                    file_id = update.message.photo[-1].file_id # Highest resolution
-                    await context.bot.send_photo(user_id, file_id, caption=update.message.caption, parse_mode=ParseMode.HTML)
+                    file_id = update.message.photo[-1].file_id
+                    await context.bot.send_photo(user_id, file_id, caption=update.message.caption_html, parse_mode=ParseMode.HTML)
                 elif update.message.video:
-                    await context.bot.send_video(user_id, update.message.video.file_id, caption=update.message.caption, parse_mode=ParseMode.HTML)
+                    await context.bot.send_video(user_id, update.message.video.file_id, caption=update.message.caption_html, parse_mode=ParseMode.HTML)
                 elif update.message.animation:
-                    await context.bot.send_animation(user_id, update.message.animation.file_id, caption=update.message.caption, parse_mode=ParseMode.HTML)
-            else:
+                    await context.bot.send_animation(user_id, update.message.animation.file_id, caption=update.message.caption_html, parse_mode=ParseMode.HTML)
+            elif update.message.text:
                 # Send text message
-                await context.bot.send_message(user_id, update.message.text, parse_mode=ParseMode.HTML)
+                await context.bot.send_message(user_id, update.message.text_html, parse_mode=ParseMode.HTML)
             
             success_count += 1
-            await asyncio.sleep(0.1) # Small delay to avoid API limits
+            # Removed asyncio.sleep(0.1) for cleaner deployment on constrained environments
         except TelegramError as e:
-            # User might have blocked the bot, log and continue
-            logger.warning(f"Broadcast failed for user {user_id}: {e}")
+            logger.warning(f"Broadcast failed for user {user_id}: {e.message}")
             
     await update.message.reply_text(
         f"✅ **BROADCAST COMPLETE!**\n\n"
@@ -576,7 +577,7 @@ async def perform_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return ConversationHandler.END
 
 # ----------------------------------------------------------------------
-# 8. Main Runner
+# 8. Main Runner (Webhook FIX)
 # ----------------------------------------------------------------------
 
 async def post_init(application: Application):
@@ -584,21 +585,23 @@ async def post_init(application: Application):
     await init_db()
 
 def main() -> None:
-    """Starts the bot."""
+    """Starts the bot with Webhook for cloud deployment (Render/Heroku FIX)."""
+    # Use Webhook URL and PORT from environment variables
+    webhook_url = WEBHOOK_URL.rstrip('/') 
+    
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
-    # 1. Giveaway Conversation Handler
+    # 1. Add Handlers (Same as before)
     giveaway_handler = ConversationHandler(
         entry_points=[CommandHandler("giveaway", start_giveaway)],
         states={
             SELECT_CHANNEL: [MessageHandler(filters.ChatType.PRIVATE & (filters.FORWARDED_FROM_CHAT | filters.Regex(r'@[a-zA-Z0-9_]+|-100\d+')), handle_channel_share)],
-            GET_IMAGE_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_image_url)], # New State
+            GET_IMAGE_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_image_url)],
             GET_DETAILS: [MessageHandler(filters.TEXT & filters.Regex(r'^(LAUNCH|launch)$'), handle_details_and_publish)],
         },
         fallbacks=[CommandHandler("cancel", cancel_giveaway)]
     )
     
-    # 2. Broadcast Conversation Handler
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", start_broadcast)],
         states={
@@ -607,29 +610,28 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", lambda update, context: (update.message.reply_text("Broadcast cancelled."), ConversationHandler.END))]
     )
 
-    # 3. Command Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", start))
     application.add_handler(CommandHandler("active_polls", active_polls))
-    
-    # 4. Add Giveaway Handlers
     application.add_handler(giveaway_handler)
     application.add_handler(broadcast_handler)
     
-    # 5. Callback Query Handler (Handles Top 10, Close Poll, Tutorial)
-    # The pattern handles show_top10|ID and close_poll|ID
+    # Callback Query Handlers
     application.add_handler(CallbackQueryHandler(close_poll_handler, pattern=r"^close_poll\|"))
-    application.add_handler(CallbackQueryHandler(lambda update, context: update.callback_query.answer("Feature not implemented in this version!"), pattern=r"show_top10\|"))
+    application.add_handler(CallbackQueryHandler(lambda update, context: update.callback_query.answer("Feature not implemented yet!"), pattern=r"show_top10\|"))
     application.add_handler(CallbackQueryHandler(lambda update, context: update.callback_query.answer("Watch the tutorial here!", url="https://youtube.com/your_bot_tutorial"), pattern="tutorial_video"))
-
-    # 6. Command for /close_poll_GIVEAWAYID
+    
+    # Command for /close_poll_GIVEAWAYID
     application.add_handler(CommandHandler("close_poll", close_poll_handler, filters=filters.Regex(r'/close_poll_[a-zA-Z0-9]+')))
 
-
-    # Start the Bot
-    logger.info(f"Bot @{BOT_USERNAME} started successfully. Polling for updates...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
+    # The FIX for Render/Cloud Deployment: Use Webhook
+    logger.info(f"Starting Webhook on port {PORT} at URL {webhook_url}")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=TELEGRAM_BOT_TOKEN,
+        webhook_url=f"{webhook_url}/{TELEGRAM_BOT_TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
