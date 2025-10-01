@@ -394,4 +394,4 @@ async def handle_deep_link_participation(update: Update, context: ContextTypes.D
 # 7. Callback Query Handler (Top 10 Feature)
 # ----------------------------------------------------------------------
 
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):pass
