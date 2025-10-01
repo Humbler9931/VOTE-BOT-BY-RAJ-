@@ -7,7 +7,8 @@ import asyncio # For stylish delays
 from datetime import datetime
 from dotenv import load_dotenv
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ParseMode
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application, CommandHandler, ContextTypes, 
     ConversationHandler, MessageHandler, filters, CallbackQueryHandler
