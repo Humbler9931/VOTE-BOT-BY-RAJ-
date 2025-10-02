@@ -13,7 +13,8 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters, CallbackQueryHandler
 )
 from telegram.error import TelegramError
-import re # For robust URL validation
+import re 
+import sys # For getting error information
 
 # ----------------------------------------------------------------------
 # 1. Configuration & Setup
@@ -30,7 +31,9 @@ PORT = int(os.getenv("PORT", 8080))
 
 # Check for essential variables
 if not TELEGRAM_BOT_TOKEN or not BOT_USERNAME or not WEBHOOK_URL:
-    raise ValueError("TELEGRAM_BOT_TOKEN, BOT_USERNAME, and WEBHOOK_URL must be set in .env")
+    # Log and raise a proper error for deployment to catch
+    logging.error("TELEGRAM_BOT_TOKEN, BOT_USERNAME, and WEBHOOK_URL must be set in .env")
+    sys.exit(1)
 
 # Logging setup
 logging.basicConfig(
@@ -52,16 +55,16 @@ DEFAULT_GIVEAWAY_IMAGE = "https://envs.sh/GhJ.jpg/IMG20250925634.jpg"
 
 # Robust URL regex for better image link validation
 URL_REGEX = re.compile(
-    r'^(?:http|ftp)s?://' # http:// or https://
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' # domain...
-    r'localhost|' # localhost...
-    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' # ...or ip
-    r'(?::\d+)?' # optional port
+    r'^(?:http|ftp)s?://' 
+    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|' 
+    r'localhost|' 
+    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})' 
+    r'(?::\d+)?' 
     r'(?:/?|[/?]\S+)$', re.IGNORECASE
 )
 
 # ----------------------------------------------------------------------
-# 2. Database Functions (Asynchronous) - Corrected and Enhanced
+# 2. Database Functions (Asynchronous)
 # ----------------------------------------------------------------------
 
 async def init_db():
@@ -124,7 +127,6 @@ async def log_participant(giveaway_id, user_id, username, full_name):
 async def get_top_participants(giveaway_id: str, limit: int = 10):
     """Fetches top N participants (by time, latest first)."""
     async with aiosqlite.connect(DB_FILE) as db:
-        # Changed SELECT to include all necessary data for display
         cursor = await db.execute("""
             SELECT full_name, username, user_id, participation_time 
             FROM participants 
@@ -182,7 +184,6 @@ async def check_bot_admin_status(bot_instance, channel_id: int) -> bool:
     """Checks if the bot is an admin in the channel and has required permissions."""
     try:
         member = await bot_instance.get_chat_member(channel_id, bot_instance.id)
-        # Check for administrator/creator status AND ability to post
         return member.status in ['administrator', 'creator'] and member.can_post_messages
     except TelegramError as e:
         logger.error(f"Error checking admin status in {channel_id}: {e}")
@@ -192,7 +193,6 @@ async def check_user_membership(bot_instance, channel_id: int, user_id: int) -> 
     """Checks if a user is a member of the channel (Subscriber check)."""
     try:
         member = await bot_instance.get_chat_member(channel_id, user_id)
-        # Check for member, administrator, or creator status
         return member.status in ['member', 'administrator', 'creator']
     except TelegramError:
         return False
@@ -247,20 +247,32 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
+# --- ERROR HANDLER FIX ---
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log the error and notify the admin."""
+    """Log the error and notify the admin and the user (if possible)."""
     logger.error("Exception while handling an update:", exc_info=context.error)
     
+    # Safely determine the chat ID to send the error message back to
+    chat_id = None
+    if update.effective_message:
+        chat_id = update.effective_message.chat_id
+    elif update.callback_query:
+        chat_id = update.callback_query.message.chat_id
+    elif update.inline_query:
+        # Cannot send messages back to inline queries, so we skip
+        return
+
     # Try to send a generic error message back to the user
-    if update.effective_chat:
+    if chat_id:
         try:
             await context.bot.send_message(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 text="⚠️ **An unexpected error occurred.** The bot has logged the issue. Please try again or contact support.",
                 parse_mode='Markdown'
             )
         except Exception as e:
-            logger.error(f"Failed to send error message back to user: {e}")
+            logger.error(f"Failed to send error message back to user {chat_id}: {e}")
+# -------------------------
 
 # ----------------------------------------------------------------------
 # 5. Giveaway Conversation Handler (Admin Flow)
@@ -307,14 +319,11 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
         return SELECT_CHANNEL
         
     channel_id = channel.id
-    channel_title = channel.title if channel.title else str(channel_id) # Use ID if no title
+    channel_title = channel.title if channel.title else str(channel_id)
 
-    # Check if channel is private (we cannot link to private channel users)
     if channel.username:
-        # If it has a username, it's public (or has a public link)
         channel_link = f"@{channel.username}"
     else:
-        # This is a private channel, we'll use the ID
         channel_link = f"ID: <code>{channel_id}</code>"
     
     message = await update.message.reply_text(f"⏳ **Verifying admin status in {channel_title} ({channel_link})...**", parse_mode=ParseMode.HTML)
@@ -333,7 +342,7 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
     giveaway_id = str(uuid.uuid4()).replace('-', '')[:10]
     GIVEAWAY_CREATION_DATA[user_id]['channel_id'] = str(channel_id)
     GIVEAWAY_CREATION_DATA[user_id]['channel_title'] = channel_title
-    GIVEAWAY_CREATION_DATA[user_id]['channel_username'] = channel.username # Store username for easy linking
+    GIVEAWAY_CREATION_DATA[user_id]['channel_username'] = channel.username
     GIVEAWAY_CREATION_DATA[user_id]['giveaway_id'] = giveaway_id
 
     # New Step: Image URL
@@ -393,7 +402,7 @@ async def handle_details_and_publish(update: Update, context: ContextTypes.DEFAU
     participation_link = f"https://t.me/{BOT_USERNAME}?start={giveaway_id}"
     
     # Determine the channel URL for the button
-    channel_url = f"https://t.me/{channel_username}" if channel_username else "https://t.me/telegram" # Default to telegram if private
+    channel_url = f"https://t.me/{channel_username}" if channel_username else "https://t.me/telegram" 
 
     # 3. Create stylish success message with buttons
     keyboard = [
@@ -532,7 +541,6 @@ async def show_top_participants(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer("Fetching top 10 recent participants...")
     
-    # Extract giveaway_id from callback_data
     try:
         giveaway_id = query.data.split('|')[1]
     except IndexError:
@@ -547,7 +555,6 @@ async def show_top_participants(update: Update, context: ContextTypes.DEFAULT_TY
         message_text += "No participants registered yet."
     else:
         for i, (full_name, username, user_id, participation_time) in enumerate(participants_data):
-            # Format time for clean display
             time_str = datetime.strptime(participation_time.split('.')[0], "%Y-%m-%d %H:%M:%S").strftime("%H:%M:%S")
             
             message_text += (
@@ -618,7 +625,7 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
 
     if not giveaway_id:
-        return # Should be caught by the above logic
+        return 
 
     giveaway_data = await get_giveaway_by_id(giveaway_id)
     if not giveaway_data:
@@ -687,23 +694,20 @@ async def perform_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     for user_id in participants:
         try:
             # Check for media first
+            caption = update.message.caption_html if update.message.caption_html else update.message.caption
+            
             if update.message.photo:
                 file_id = update.message.photo[-1].file_id
-                # Use update.message.caption_html if available, otherwise update.message.caption
-                caption = update.message.caption_html if update.message.caption_html else update.message.caption
                 await context.bot.send_photo(user_id, file_id, caption=caption, parse_mode=ParseMode.HTML)
             elif update.message.video:
-                caption = update.message.caption_html if update.message.caption_html else update.message.caption
                 await context.bot.send_video(user_id, update.message.video.file_id, caption=caption, parse_mode=ParseMode.HTML)
             elif update.message.animation:
-                caption = update.message.caption_html if update.message.caption_html else update.message.caption
                 await context.bot.send_animation(user_id, update.message.animation.file_id, caption=caption, parse_mode=ParseMode.HTML)
             elif update.message.text:
                 # Send text message (using text_html for parse mode support)
                 await context.bot.send_message(user_id, update.message.text_html, parse_mode=ParseMode.HTML)
             
             success_count += 1
-            # Note: For production use, consider throttling or using a separate background job
         except TelegramError as e:
             logger.warning(f"Broadcast failed for user {user_id} (ID: {giveaway_id}): {e.message}")
             
@@ -731,7 +735,6 @@ def main() -> None:
     giveaway_handler = ConversationHandler(
         entry_points=[CommandHandler("giveaway", start_giveaway)],
         states={
-            # Filters.Regex is more robust for checking usernames/IDs than simple filters.TEXT
             SELECT_CHANNEL: [MessageHandler(filters.ChatType.PRIVATE & (filters.FORWARDED_FROM_CHAT | filters.Regex(r'(@[a-zA-Z0-9_]+|-100\d+)')), handle_channel_share)],
             GET_IMAGE_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_image_url)],
             GET_DETAILS: [MessageHandler(filters.TEXT & filters.Regex(r'^(LAUNCH|launch)$'), handle_details_and_publish)],
@@ -742,7 +745,6 @@ def main() -> None:
     broadcast_handler = ConversationHandler(
         entry_points=[CommandHandler("broadcast", start_broadcast)],
         states={
-            # filters.ALL ensures photo, video, text, etc. are handled
             BROADCAST_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, perform_broadcast)],
         },
         fallbacks=[CommandHandler("cancel", lambda update, context: (update.message.reply_text("Broadcast cancelled."), ConversationHandler.END))]
@@ -764,7 +766,7 @@ def main() -> None:
     # Command for /close_poll_GIVEAWAYID (Direct Command)
     application.add_handler(CommandHandler("close_poll", close_poll_handler, filters=filters.Regex(r'/close_poll_[a-zA-Z0-9]+')))
 
-    # Add Error Handler
+    # Add Error Handler (FIXED)
     application.add_error_handler(error_handler)
 
     # The FIX for Render/Cloud Deployment: Use Webhook
