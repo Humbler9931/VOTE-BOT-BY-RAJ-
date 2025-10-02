@@ -1,5 +1,6 @@
 # main.py
 import os
+import io
 import logging
 import uuid
 import aiosqlite
@@ -7,17 +8,17 @@ from datetime import datetime
 from random import sample
 import re
 import sys
+from typing import Optional, List, Dict
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.constants import ParseMode
 from telegram.ext import (
-    Application, ApplicationBuilder, CommandHandler, ContextTypes,
+    Application, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, filters, CallbackQueryHandler
 )
 from telegram.error import TelegramError
 
 # ---------------- Configuration & Setup ----------------
-
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BOT_USERNAME = os.getenv("BOT_USERNAME")
 try:
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 SELECT_CHANNEL, GET_IMAGE_URL, GET_DETAILS = range(3)
 BROADCAST_MESSAGE = 99
 DB_FILE = "advanced_giveaway_bot.db"
-GIVEAWAY_CREATION_DATA = {}
+GIVEAWAY_CREATION_DATA: Dict[int, Dict] = {}
 DEFAULT_GIVEAWAY_IMAGE = "https://envs.sh/GhJ.jpg/IMG20250925634.jpg"
 
 URL_REGEX = re.compile(
@@ -55,7 +56,6 @@ URL_REGEX = re.compile(
 )
 
 # ---------------- Database (async) ----------------
-
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("""
@@ -81,7 +81,7 @@ async def init_db():
         await db.commit()
     logger.info("Database initialized.")
 
-async def save_giveaway(giveaway_id, channel_id, creator_id, image_url):
+async def save_giveaway(giveaway_id: str, channel_id: str, creator_id: int, image_url: str):
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute(
             "INSERT INTO giveaways (giveaway_id, channel_id, creator_id, image_url) VALUES (?, ?, ?, ?)",
@@ -89,7 +89,7 @@ async def save_giveaway(giveaway_id, channel_id, creator_id, image_url):
         )
         await db.commit()
 
-async def get_giveaway_by_id(giveaway_id):
+async def get_giveaway_by_id(giveaway_id: str) -> Optional[Dict]:
     async with aiosqlite.connect(DB_FILE) as db:
         cursor = await db.execute("SELECT channel_id, is_active, image_url FROM giveaways WHERE giveaway_id = ?", (giveaway_id,))
         row = await cursor.fetchone()
@@ -97,7 +97,7 @@ async def get_giveaway_by_id(giveaway_id):
             return {"channel_id": row[0], "is_active": bool(row[1]), "image_url": row[2]}
         return None
 
-async def log_participant(giveaway_id, user_id, username, full_name):
+async def log_participant(giveaway_id: str, user_id: int, username: str, full_name: str) -> bool:
     async with aiosqlite.connect(DB_FILE) as db:
         try:
             await db.execute(
@@ -130,6 +130,11 @@ async def get_all_participants_for_giveaway(giveaway_id: str):
         cursor = await db.execute("SELECT user_id, username, full_name FROM participants WHERE giveaway_id = ?", (giveaway_id,))
         return [{"user_id": row[0], "username": row[1], "full_name": row[2]} for row in await cursor.fetchall()]
 
+async def get_entries_of_user(user_id: int):
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute("SELECT giveaway_id, participation_time FROM participants WHERE user_id = ? ORDER BY participation_time DESC", (user_id,))
+        return await cursor.fetchall()
+
 async def close_giveaway_db(giveaway_id: str):
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute("UPDATE giveaways SET is_active = 0 WHERE giveaway_id = ?", (giveaway_id,))
@@ -143,8 +148,13 @@ async def select_random_winners(giveaway_id: str, count: int = 1):
     winners = sample(participants, count)
     return winners
 
-# ---------------- Utilities ----------------
+async def count_total_participants() -> int:
+    async with aiosqlite.connect(DB_FILE) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM participants")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
+# ---------------- Utilities ----------------
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -153,7 +163,6 @@ def format_participant_details(user: dict) -> str:
     username = user.get('username', 'N/A')
     user_id = user.get('id', 'N/A')
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     message_text = (
         f"<b>[⚡] NEW VOTE-ENTRY [⚡]</b>\n\n"
         f"► 👤 USER: <a href='tg://user?id={user_id}'>{full_name}</a>\n"
@@ -192,10 +201,8 @@ async def check_user_membership(bot_instance, channel_id: int, user_id: int) -> 
         return False
 
 # ---------------- Error Handler ----------------
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
-
     chat_id = None
     if getattr(update, "effective_chat", None):
         chat_id = update.effective_chat.id
@@ -203,7 +210,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         chat_id = update.callback_query.message.chat_id
     else:
         return
-
     if chat_id and chat_id > 0:
         try:
             await context.bot.send_message(
@@ -215,14 +221,11 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Failed to send error message back to user {chat_id}: {e}")
 
 # ---------------- Handlers ----------------
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Deep link handling
     if context.args:
         giveaway_id = context.args[0]
         await handle_deep_link_participation(update, context, giveaway_id)
         return
-
     keyboard = [
         [InlineKeyboardButton("➕ Add Bot To Channel", url=f"https://t.me/{BOT_USERNAME}?startgroup=start")],
         [InlineKeyboardButton("📚 Tutorial", url="https://youtube.com/your_bot_tutorial"),
@@ -248,19 +251,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• /giveaway - Start the multi-step process to create a new Vote-Poll.\n"
         "• /active_polls - List currently running polls.\n"
         "• /close_poll_<ID> - Close poll & select winner(s).\n"
-        "• /broadcast <ID> - Send message to poll participants.\n\n"
+        "• /broadcast <ID> - Send message to poll participants.\n"
+        "• /export_participants <ID> - Export participants CSV (admin).\n"
+        "• /stats - Bot stats (admin).\n\n"
         "*» USER COMMANDS:*\n"
         "• /start - Main menu\n"
-        "• /help - This message"
+        "• /help - This message\n"
+        "• /my_entries - Show giveaways you joined"
     )
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
-# Giveaway creation (admin conversation)
+# Giveaway creation (admin)
 async def start_giveaway(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("❌ You must be an administrator to create a Vote-Poll.", parse_mode=ParseMode.HTML)
         return ConversationHandler.END
-
     user_id = update.effective_user.id
     GIVEAWAY_CREATION_DATA[user_id] = {}
     await update.message.reply_text(
@@ -273,11 +278,9 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id
     msg = update.message
     channel = None
-
     if msg is None:
         await update.effective_message.reply_text("❌ Please forward a channel message or send channel @username / -100id.")
         return SELECT_CHANNEL
-
     if msg.forward_from_chat and getattr(msg.forward_from_chat, "type", "") in ['channel', 'supergroup']:
         channel = msg.forward_from_chat
     elif msg.text:
@@ -288,22 +291,17 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
             except TelegramError as e:
                 logger.warning(f"get_chat failed for {text}: {e}")
                 channel = None
-
     if not channel:
         await msg.reply_text("❌ Invalid channel. Forward channel message or send @username / -100id.", parse_mode=ParseMode.MARKDOWN)
         return SELECT_CHANNEL
-
     channel_id = str(channel.id)
     channel_title = channel.title or "Untitled Channel"
     channel_username = channel.username
-
     status_msg = await msg.reply_text(f"⏳ Verifying admin status for {channel_title}...", parse_mode=ParseMode.HTML)
     if not await check_bot_admin_status(context.bot, channel_id):
         await status_msg.edit_text("❌ ADMIN CHECK FAILED! Add bot as admin with Post Messages permission.", parse_mode=ParseMode.HTML)
         return SELECT_CHANNEL
-
     await status_msg.edit_text("✅ Admin status verified.", parse_mode=ParseMode.HTML)
-
     giveaway_id = str(uuid.uuid4()).replace('-', '')[:10]
     GIVEAWAY_CREATION_DATA[user_id] = {
         'channel_id': channel_id,
@@ -311,7 +309,6 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
         'channel_username': channel_username,
         'giveaway_id': giveaway_id
     }
-
     await msg.reply_text(
         f"🖼 STEP 2/3: Send public HTTPS image URL (or type SKIP to use default).\nExample: {DEFAULT_GIVEAWAY_IMAGE}",
         parse_mode=ParseMode.HTML
@@ -321,7 +318,6 @@ async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYP
 async def get_image_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     text = update.message.text.strip() if update.message and update.message.text else ""
-
     if text.upper() == "SKIP":
         GIVEAWAY_CREATION_DATA[user_id]['image_url'] = DEFAULT_GIVEAWAY_IMAGE
     else:
@@ -329,7 +325,6 @@ async def get_image_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             await update.message.reply_text("❌ Invalid URL. Send full public URL starting with http/https or type SKIP.")
             return GET_IMAGE_URL
         GIVEAWAY_CREATION_DATA[user_id]['image_url'] = text
-
     await update.message.reply_text("✅ Image saved. STEP 3/3: Type LAUNCH to publish the poll.", parse_mode=ParseMode.MARKDOWN)
     return GET_DETAILS
 
@@ -339,27 +334,21 @@ async def handle_details_and_publish(update: Update, context: ContextTypes.DEFAU
     if not data:
         await update.message.reply_text("Session expired. Start /giveaway again.")
         return ConversationHandler.END
-
     if not update.message or not update.message.text or update.message.text.strip().upper() != "LAUNCH":
         await update.message.reply_text("Please type LAUNCH to proceed.", parse_mode=ParseMode.MARKDOWN)
         return GET_DETAILS
-
     giveaway_id = data['giveaway_id']
     channel_id = data['channel_id']
     image_url = data['image_url']
     channel_title = data['channel_title']
     channel_username = data.get('channel_username')
-
     await save_giveaway(giveaway_id, channel_id, update.effective_user.id, image_url)
-
     participation_link = f"https://t.me/{BOT_USERNAME}?start={giveaway_id}"
     channel_url = f"https://t.me/{channel_username}" if channel_username else "https://t.me/telegram"
-
     keyboard = [
         [InlineKeyboardButton("✨ Channel Link", url=channel_url), InlineKeyboardButton("🏆 View Top 10", callback_data=f"show_top10|{giveaway_id}")],
         [InlineKeyboardButton("🛑 CLOSE POLL & SELECT WINNER(S)", callback_data=f"close_poll|{giveaway_id}")]
     ]
-
     caption = (
         f"✅ <b>VOTE-POLL CREATED!</b>\n\n"
         f"Channel: <b>{channel_title}</b>\n"
@@ -367,7 +356,6 @@ async def handle_details_and_publish(update: Update, context: ContextTypes.DEFAU
         f"Participation Link:\n<code>{participation_link}</code>\n\n"
         f"<i>Participants must be subscribers to log entry.</i>"
     )
-
     await update.message.reply_photo(photo=image_url, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
     GIVEAWAY_CREATION_DATA.pop(user_id, None)
     return ConversationHandler.END
@@ -385,10 +373,8 @@ async def handle_deep_link_participation(update: Update, context: ContextTypes.D
     if not giveaway_data or not giveaway_data.get('is_active', False):
         await update.effective_message.reply_text("❌ This poll has ended or is invalid.")
         return
-
     channel_id = giveaway_data['channel_id']
     image_url = giveaway_data.get('image_url')
-
     try:
         channel_info = await context.bot.get_chat(channel_id)
         channel_link = f"https://t.me/{channel_info.username}" if channel_info.username else "https://t.me/telegram"
@@ -396,7 +382,6 @@ async def handle_deep_link_participation(update: Update, context: ContextTypes.D
     except TelegramError:
         channel_link = f"Channel ID: <code>{channel_id}</code>"
         channel_name = "Unknown Channel"
-
     is_member = await check_user_membership(context.bot, channel_id, user.id)
     if not is_member:
         caption_text = (
@@ -413,12 +398,9 @@ async def handle_deep_link_participation(update: Update, context: ContextTypes.D
             ])
         )
         return
-
-    # register participant
     user_full = user.full_name
     user_un = user.username if user.username else f"id{user.id}"
     success = await log_participant(giveaway_id, user.id, user_un, user_full)
-
     if success:
         participant_message = format_participant_details({'full_name': user_full, 'username': user_un, 'id': user.id})
         try:
@@ -447,7 +429,6 @@ async def show_top_participants(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         await query.message.reply_text("Invalid query data.")
         return
-
     data = await get_top_participants(giveaway_id, limit=10)
     lines = [f"🏆 <b>TOP 10 (Poll ID: {giveaway_id})</b>\n"]
     if not data:
@@ -483,10 +464,8 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return
-
     giveaway_id = None
     source_chat = update.effective_chat
-
     if update.callback_query:
         query = update.callback_query
         await query.answer("Closing poll...")
@@ -503,32 +482,26 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             await update.message.reply_text("Invalid command format. Use /close_poll_<ID>.")
             return
-
     if not giveaway_id:
         return
-
     giveaway_data = await get_giveaway_by_id(giveaway_id)
     if not giveaway_data or not giveaway_data.get('is_active', False):
         await context.bot.send_message(source_chat.id, f"Poll <code>{giveaway_id}</code> is closed or not found.", parse_mode=ParseMode.HTML)
         return
-
     winners = await select_random_winners(giveaway_id, count=1)
     total = len(await get_all_participants_for_giveaway(giveaway_id))
     await close_giveaway_db(giveaway_id)
-
     lines = [f"🛑 <b>GIVEAWAY CLOSED!</b>\n\nVote-Poll ID <code>{giveaway_id}</code> is now closed.", f"Total Entries: <b>{total}</b>\n"]
     if winners:
         for i, w in enumerate(winners):
             lines.append(f"<b>{i+1}.</b> <a href='tg://user?id={w['user_id']}'>{w['full_name']}</a> (@{w['username']})")
     else:
         lines.append("⚠️ No participants found.")
-
     announcement = "\n".join(lines)
     try:
         await context.bot.send_message(giveaway_data['channel_id'], announcement, parse_mode=ParseMode.HTML)
     except TelegramError as e:
         logger.warning(f"Failed to announce to channel {giveaway_data['channel_id']}: {e}")
-
     await context.bot.send_message(source_chat.id, f"✅ Poll <code>{giveaway_id}</code> closed and announced.", parse_mode=ParseMode.HTML)
 
 # Broadcast (admin)
@@ -552,15 +525,11 @@ async def perform_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not giveaway_id:
         await update.message.reply_text("Broadcast session expired.")
         return ConversationHandler.END
-
     participants = [p['user_id'] for p in await get_all_participants_for_giveaway(giveaway_id)]
     total_users = len(participants)
     success = 0
-
-    # message content
     text_payload = update.message.text if update.message and getattr(update.message, "text", None) else None
     caption_payload = getattr(update.message, "caption", None)
-
     for uid in participants:
         try:
             if getattr(update.message, "photo", None):
@@ -576,7 +545,6 @@ async def perform_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             logger.warning(f"Broadcast failed for {uid}: {e}")
         except Exception as e:
             logger.warning(f"Broadcast unexpected error for {uid}: {e}")
-
     await update.message.reply_text(f"Broadcast complete. Sent to {success} / {total_users}.")
     return ConversationHandler.END
 
@@ -584,10 +552,53 @@ async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text("Broadcast cancelled.")
     return ConversationHandler.END
 
-# ---------------- Application init & run ----------------
+# ---------------- New Features ----------------
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Admins only.")
+        return
+    total_giveaways = len(await get_all_active_giveaways())
+    total_participants = await count_total_participants()
+    await update.message.reply_text(f"📊 Stats:\n• Active giveaways: {total_giveaways}\n• Total participants logged: {total_participants}", parse_mode=ParseMode.MARKDOWN)
 
+async def my_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    rows = await get_entries_of_user(user_id)
+    if not rows:
+        await update.message.reply_text("You have no entries yet.")
+        return
+    lines = ["📋 Your recent entries:"]
+    for gid, time in rows:
+        lines.append(f"- {gid} at {time}")
+    await update.message.reply_text("\n".join(lines))
+
+async def export_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("❌ Admins only.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /export_participants <GIVEAWAY_ID>")
+        return
+    giveaway_id = context.args[0]
+    rows = await get_all_participants_for_giveaway(giveaway_id)
+    if not rows:
+        await update.message.reply_text("No participants found for this giveaway or invalid ID.")
+        return
+    # CSV in memory
+    buffer = io.StringIO()
+    buffer.write("user_id,username,full_name\n")
+    for p in rows:
+        uid = p['user_id']
+        uname = p['username'] or ""
+        fname = p['full_name'].replace(",", " ") if p['full_name'] else ""
+        buffer.write(f"{uid},{uname},{fname}\n")
+    buffer.seek(0)
+    bio = io.BytesIO(buffer.getvalue().encode())
+    bio.name = f"participants_{giveaway_id}.csv"
+    await update.message.reply_document(document=InputFile(bio, filename=bio.name), caption=f"Participants for {giveaway_id}")
+
+# ---------------- Application init & run ----------------
 async def post_init(application: Application):
-    # create DB
     await init_db()
     logger.info("Post-init done.")
 
@@ -606,19 +617,25 @@ def main() -> None:
             GET_IMAGE_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_image_url)],
             GET_DETAILS: [MessageHandler(filters.TEXT & filters.Regex(r'^(LAUNCH|launch)$'), handle_details_and_publish)],
         },
-        fallbacks=[CommandHandler("cancel", cancel_giveaway)]
+        fallbacks=[CommandHandler("cancel", cancel_giveaway)],
+        allow_reentry=True
     )
 
     broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", start_broadcast)],
         states={BROADCAST_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, perform_broadcast)]},
-        fallbacks=[CommandHandler("cancel", cancel_broadcast)]
+        fallbacks=[CommandHandler("cancel", cancel_broadcast)],
+        allow_reentry=True
     )
 
     # Core handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("active_polls", active_polls))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("my_entries", my_entries))
+    application.add_handler(CommandHandler("export_participants", export_participants))
+
     application.add_handler(giveaway_conv)
     application.add_handler(broadcast_conv)
 
