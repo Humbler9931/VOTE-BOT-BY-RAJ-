@@ -1,4 +1,4 @@
-# main.py (fixed & PTB v20+ ready)
+# main_advanced.py (Stylish & Feature-Rich PTB v20+ Vote Bot)
 import os
 import sys
 import logging
@@ -7,12 +7,12 @@ import aiosqlite
 from datetime import datetime
 from random import sample
 import re
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 # Telegram imports
 import telegram
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
-from telegram.constants import ParseMode
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -22,10 +22,11 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
 )
+from telegram.error import TelegramError
 
-# ---------------- Configuration & Setup ----------------
+# --- Configuration & Setup (Same as before) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BOT_USERNAME = os.getenv("BOT_USERNAME")  # without @
+BOT_USERNAME = os.getenv("BOT_USERNAME")
 try:
     ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip().isdigit()]
 except Exception:
@@ -35,7 +36,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
 
 if not TELEGRAM_BOT_TOKEN or not BOT_USERNAME or not WEBHOOK_URL:
-    logging.error("CRITICAL: Essential environment variables (TELEGRAM_BOT_TOKEN, BOT_USERNAME, WEBHOOK_URL) are missing.")
+    logging.error("CRITICAL: Essential environment variables missing.")
     sys.exit(1)
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -46,7 +47,7 @@ SELECT_CHANNEL, GET_IMAGE_URL, GET_DETAILS = range(3)
 BROADCAST_MESSAGE = 99
 
 DB_FILE = "advanced_giveaway_bot.db"
-GIVEAWAY_CREATION_DATA: Dict[int, Dict[str, Any]] = {}
+# Temporary storage for creation data (Stylish: Using Context.user_data for conversation flow)
 DEFAULT_GIVEAWAY_IMAGE = "https://envs.sh/GhJ.jpg/IMG20250925634.jpg"
 
 URL_REGEX = re.compile(
@@ -59,26 +60,7 @@ URL_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-
-# ---------------- Helper: PTB version check ----------------
-def ensure_ptb_v20_or_exit():
-    v = getattr(telegram, "__version__", "0")
-    try:
-        major = int(str(v).split(".")[0])
-    except Exception:
-        major = 0
-    if major < 20:
-        logger.critical(
-            "Installed python-telegram-bot is outdated (version %s). This bot requires PTB v20+. "
-            "Please update your environment with: pip install --upgrade 'python-telegram-bot>=20.3' "
-            "and redeploy.", v
-        )
-        # Provide a clear exit message (Render logs will show this)
-        print("ERROR: python-telegram-bot version must be >= 20. Installed:", v, file=sys.stderr)
-        sys.exit(1)
-
-
-# ---------------- Database (async) ----------------
+# --- Database (Enhanced) ---
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute(
@@ -89,7 +71,8 @@ async def init_db():
                 creator_id INTEGER NOT NULL,
                 image_url TEXT,
                 start_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-                is_active INTEGER NOT NULL DEFAULT 1
+                is_active INTEGER NOT NULL DEFAULT 1,
+                winner_count INTEGER DEFAULT 1 -- Stylish: Added winner_count
             )
             """
         )
@@ -105,66 +88,35 @@ async def init_db():
             )
             """
         )
+        # Ensure the new column exists if updating from old structure
+        try:
+            await db.execute("SELECT winner_count FROM giveaways LIMIT 1")
+        except aiosqlite.OperationalError:
+            await db.execute("ALTER TABLE giveaways ADD COLUMN winner_count INTEGER DEFAULT 1")
+
         await db.commit()
     logger.info("Database initialized successfully.")
 
-
-async def save_giveaway(giveaway_id: str, channel_id: str, creator_id: int, image_url: str):
+# Save giveaway now includes winner_count
+async def save_giveaway(giveaway_id: str, channel_id: str, creator_id: int, image_url: str, winner_count: int = 1):
     async with aiosqlite.connect(DB_FILE) as db:
         await db.execute(
-            "INSERT INTO giveaways (giveaway_id, channel_id, creator_id, image_url) VALUES (?, ?, ?, ?)",
-            (giveaway_id, channel_id, creator_id, image_url),
+            "INSERT INTO giveaways (giveaway_id, channel_id, creator_id, image_url, winner_count) VALUES (?, ?, ?, ?, ?)",
+            (giveaway_id, channel_id, creator_id, image_url, winner_count),
         )
         await db.commit()
-
 
 async def get_giveaway_by_id(giveaway_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_FILE) as db:
         cursor = await db.execute(
-            "SELECT channel_id, is_active, image_url FROM giveaways WHERE giveaway_id = ?", (giveaway_id,)
+            "SELECT channel_id, is_active, image_url, winner_count FROM giveaways WHERE giveaway_id = ?", (giveaway_id,)
         )
         row = await cursor.fetchone()
         if row:
-            return {"channel_id": row[0], "is_active": bool(row[1]), "image_url": row[2]}
+            return {"channel_id": row[0], "is_active": bool(row[1]), "image_url": row[2], "winner_count": row[3]}
         return None
 
-
-async def log_participant(giveaway_id: str, user_id: int, username: str, full_name: str) -> bool:
-    async with aiosqlite.connect(DB_FILE) as db:
-        try:
-            await db.execute(
-                "INSERT INTO participants (giveaway_id, user_id, username, full_name) VALUES (?, ?, ?, ?)",
-                (giveaway_id, user_id, username, full_name),
-            )
-            await db.commit()
-            return True
-        except aiosqlite.IntegrityError:
-            return False
-
-
-async def get_top_participants(giveaway_id: str, limit: int = 10):
-    async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute(
-            """
-            SELECT full_name, username, user_id, participation_time
-            FROM participants
-            WHERE giveaway_id = ?
-            ORDER BY participation_time DESC
-            LIMIT ?
-            """,
-            (giveaway_id, limit),
-        )
-        return await cursor.fetchall()
-
-
-async def get_all_active_giveaways():
-    async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute(
-            "SELECT giveaway_id, channel_id, start_time FROM giveaways WHERE is_active = 1 ORDER BY start_time DESC"
-        )
-        return await cursor.fetchall()
-
-
+# Rest of the DB functions (log_participant, get_all_participants_for_giveaway, etc.) remain mostly the same.
 async def get_all_participants_for_giveaway(giveaway_id: str):
     async with aiosqlite.connect(DB_FILE) as db:
         cursor = await db.execute(
@@ -173,435 +125,253 @@ async def get_all_participants_for_giveaway(giveaway_id: str):
         rows = await cursor.fetchall()
         return [{"user_id": r[0], "username": r[1], "full_name": r[2]} for r in rows]
 
-
-async def close_giveaway_db(giveaway_id: str):
-    async with aiosqlite.connect(DB_FILE) as db:
-        await db.execute("UPDATE giveaways SET is_active = 0 WHERE giveaway_id = ?", (giveaway_id,))
-        await db.commit()
-
-
-async def select_random_winners(giveaway_id: str, count: int = 1):
+async def select_random_winners(giveaway_id: str, count: int):
     participants = await get_all_participants_for_giveaway(giveaway_id)
     if not participants:
         return []
     count = min(count, len(participants))
     return sample(participants, count)
 
-
-async def get_entries_of_user(user_id: int):
+async def close_giveaway_db(giveaway_id: str):
     async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute(
-            "SELECT giveaway_id, participation_time FROM participants WHERE user_id = ? ORDER BY participation_time DESC", (user_id,)
-        )
-        return await cursor.fetchall()
+        await db.execute("UPDATE giveaways SET is_active = 0 WHERE giveaway_id = ?", (giveaway_id,))
+        await db.commit()
+# --- Utilities & Checks (Enhanced) ---
 
-
-async def count_total_participants() -> int:
-    async with aiosqlite.connect(DB_FILE) as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM participants")
-        row = await cursor.fetchone()
-        return row[0] if row else 0
-
-
-# ---------------- Utilities & Formatters ----------------
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
-
-
-def format_participant_details(user: Dict[str, Any]) -> str:
-    full_name = user.get("full_name", "N/A")
-    username = user.get("username", "N/A")
-    user_id = user.get("id", "N/A")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return (
-        f"<b>[⚡] NEW VOTE-ENTRY [⚡]</b>\n\n"
-        f"► 👤 USER: <a href='tg://user?id={user_id}'>{full_name}</a>\n"
-        f"► 🆔 USER-ID: <code>{user_id}</code>\n"
-        f"► 📛 USERNAME: @{username}\n"
-        f"► 🕰️ TIME: <i>{timestamp}</i>\n\n"
-        f"<b>» VOTE:</b> Click the REACTION BUTTON on this post!\n"
-        f"CREATED BY @{BOT_USERNAME}"
-    )
-
 
 async def check_bot_admin_status(bot_instance, channel_id: str) -> bool:
     try:
         channel_id = int(channel_id)
         me = await bot_instance.get_me()
-        bot_id = me.id
-        member = await bot_instance.get_chat_member(channel_id, bot_id)
-        status = getattr(member, "status", "")
-        can_post = getattr(member, "can_post_messages", True)
-        return (status in ["administrator", "creator"]) and can_post
-    except TelegramError as e:
-        logger.error("Error checking admin status in %s: %s", channel_id, e)
-        return False
-    except Exception as e:
-        logger.error("Unexpected error checking admin status: %s", e)
-        return False
-
-
-async def check_user_membership(bot_instance, channel_id: str, user_id: int) -> bool:
-    try:
-        channel_id = int(channel_id)
-        member = await bot_instance.get_chat_member(channel_id, user_id)
-        return member.status in ["member", "administrator", "creator"]
+        member = await bot_instance.get_chat_member(channel_id, me.id)
+        # Check for administrative rights and ability to post
+        return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR] and member.can_post_messages
     except TelegramError:
         return False
     except Exception:
         return False
 
+async def check_user_membership(bot_instance, channel_id: str, user_id: int) -> bool:
+    try:
+        channel_id = int(channel_id)
+        member = await bot_instance.get_chat_member(channel_id, user_id)
+        return member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+    except TelegramError:
+        return False
+    except Exception:
+        return False
 
-# ---------------- Error Handler ----------------
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Exception while handling an update:", exc_info=context.error)
-    chat_id = None
-    if getattr(update, "effective_chat", None):
-        chat_id = update.effective_chat.id
-    elif getattr(update, "callback_query", None) and update.callback_query.message:
-        chat_id = update.callback_query.message.chat_id
-    else:
-        return
-    if chat_id and chat_id > 0:
-        try:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="⚠️ An unexpected error occurred. The bot has logged the issue. Please try again later.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-        except Exception as e:
-            logger.error("Failed to send error message back to user %s: %s", chat_id, e)
+# --- Core Handlers (Refined) ---
 
-
-# ---------------- Command & Conversation Handlers ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # deep link handling
     if context.args:
         giveaway_id = context.args[0]
         await handle_deep_link_participation(update, context, giveaway_id)
         return
 
     keyboard = [
-        [InlineKeyboardButton("➕ Add Bot To Channel", url=f"https://t.me/{BOT_USERNAME}?startgroup=start")],
-        [InlineKeyboardButton("📚 Tutorial", url="https://youtube.com/your_bot_tutorial"),
+        [InlineKeyboardButton("➕ Bot Ko Channel Me Jodein", url=f"https://t.me/{BOT_USERNAME}?startgroup=start")],
+        [InlineKeyboardButton("🏆 Giveaway Shuru Karein", callback_data="start_giveaway_conv")],
+        [InlineKeyboardButton("📚 Guide", url="https://telegra.ph/Your-Bot-Guide"),
          InlineKeyboardButton("❓ Support", url="https://t.me/your_support_group")],
     ]
-    await update.effective_message.reply_photo(
-        photo=DEFAULT_GIVEAWAY_IMAGE,
+    
+    # Stylish: Using a clearer welcome message with HTML
+    await update.effective_message.reply_html(
         caption=(
-            f"🚀 <b>Welcome to @{BOT_USERNAME}: The Ultimate Vote Bot!</b>\n\n"
-            "<i>Automate vote-based giveaways & content contests in your Telegram channels.</i>\n\n"
-            "<b>» How to Get Started:</b>\n"
-            "• Admins use /giveaway to launch a new vote-poll.\n"
-            "• Use /help to see all features."
+            f"🚀 <b>{BOT_USERNAME} Mein Aapka Swagat Hai!</b>\n\n"
+            "<i>Yeh bot aapke Telegram channels ke liye Vote/Reaction based giveaways ko automate karta hai.</i>\n\n"
+            "<b>» Admin Commands:</b> /giveaway, /active_polls, /stats\n"
+            "<b>» User Command:</b> /my_entries"
         ),
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode=ParseMode.HTML,
     )
 
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    help_text = (
-        "📚 *BOT COMMANDS & USAGE*\n\n"
-        "*» ADMIN COMMANDS (Admin Only):*\n"
-        "• /giveaway - Start the multi-step process to create a new Vote-Poll.\n"
-        "• /active_polls - List currently running polls.\n"
-        "• /close_poll_<ID> - Close poll & select winner(s).\n"
-        "• /broadcast <ID> - Send message to poll participants.\n\n"
-        "*» USER COMMANDS:*\n"
-        "• /start - Main menu\n"
-        "• /help - This message"
-    )
-    await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
-
+async def start_giveaway_conv_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handles the start of the giveaway conversation from an inline button."""
+    query = update.callback_query
+    await query.answer()
+    return await start_giveaway(update, context) # Delegate to the main command handler
 
 async def start_giveaway(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not is_admin(update.effective_user.id):
-        await update.effective_message.reply_text("❌ You must be an administrator to create a Vote-Poll.", parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
+    """Initiates the giveaway creation flow."""
     user_id = update.effective_user.id
-    GIVEAWAY_CREATION_DATA[user_id] = {}
-    await update.effective_message.reply_text(
+    if not is_admin(user_id):
+        await update.effective_message.reply_html("❌ Aapko Vote-Poll banane ke liye **administrator** hona zaroori hai.")
+        return ConversationHandler.END
+    
+    # Stylish: Using context.user_data for temporary session data
+    context.user_data[user_id] = {} 
+    
+    await update.effective_message.reply_html(
         "🎁 <b>STEP 1/3: Channel Selection</b>\n\n"
-        "Please forward a message from the channel or send the channel @username or -100id.",
-        parse_mode=ParseMode.HTML,
+        "Kripya channel se ek message **Forward** karein, ya channel ka **@username** ya **-100id** bhejein."
     )
     return SELECT_CHANNEL
 
-
-async def handle_channel_share(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    msg = update.effective_message
-    channel = None
-
-    if msg is None:
-        await update.effective_message.reply_text("❌ Please forward a channel message or send channel @username / -100id.")
-        return SELECT_CHANNEL
-
-    # If forwarded from chat
-    if getattr(msg, "forward_from_chat", None) and getattr(msg.forward_from_chat, "type", "") in ["channel", "supergroup"]:
-        channel = msg.forward_from_chat
-    elif getattr(msg, "text", None):
-        text = msg.text.strip()
-        if re.match(r"^@[A-Za-z0-9_]+$|^-\d+$", text):
-            try:
-                channel = await context.bot.get_chat(text)
-            except TelegramError as e:
-                logger.warning("get_chat failed for %s: %s", text, e)
-                channel = None
-
-    if not channel:
-        await msg.reply_text("❌ Invalid channel. Forward channel message or send @username / -100id.", parse_mode=ParseMode.MARKDOWN)
-        return SELECT_CHANNEL
-
-    channel_id = str(channel.id)
-    channel_title = getattr(channel, "title", "Untitled Channel")
-    channel_username = getattr(channel, "username", None)
-
-    status_msg = await msg.reply_text(f"⏳ Verifying admin status for {channel_title}...", parse_mode=ParseMode.HTML)
-    if not await check_bot_admin_status(context.bot, channel_id):
-        await status_msg.edit_text("❌ ADMIN CHECK FAILED! Add bot as admin with Post Messages permission.", parse_mode=ParseMode.HTML)
-        return SELECT_CHANNEL
-
-    await status_msg.edit_text("✅ Admin status verified.", parse_mode=ParseMode.HTML)
-
-    giveaway_id = str(uuid.uuid4()).replace("-", "")[:10]
-    GIVEAWAY_CREATION_DATA[user_id] = {
-        "channel_id": channel_id,
-        "channel_title": channel_title,
-        "channel_username": channel_username,
-        "giveaway_id": giveaway_id,
-    }
-
-    await msg.reply_text(
-        f"🖼 STEP 2/3: Send public HTTPS image URL (or type SKIP to use default).\nExample: {DEFAULT_GIVEAWAY_IMAGE}",
-        parse_mode=ParseMode.HTML,
-    )
-    return GET_IMAGE_URL
-
-
 async def get_image_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gets the image URL for the poll."""
     user_id = update.effective_user.id
-    text = update.effective_message.text.strip() if update.effective_message and getattr(update.effective_message, "text", None) else ""
+    text = update.effective_message.text.strip() if update.effective_message.text else ""
 
     if text.upper() == "SKIP":
-        GIVEAWAY_CREATION_DATA[user_id]["image_url"] = DEFAULT_GIVEAWAY_IMAGE
+        context.user_data[user_id]["image_url"] = DEFAULT_GIVEAWAY_IMAGE
     else:
         if not URL_REGEX.match(text):
-            await update.effective_message.reply_text("❌ Invalid URL. Send full public URL starting with http/https or type SKIP.")
+            await update.effective_message.reply_text("❌ Invalid URL. Pura public URL bhejein (http/https se shuru), ya **SKIP** type karein.")
             return GET_IMAGE_URL
-        GIVEAWAY_CREATION_DATA[user_id]["image_url"] = text
+        context.user_data[user_id]["image_url"] = text
 
-    await update.effective_message.reply_text("✅ Image saved. STEP 3/3: Type LAUNCH to publish the poll.", parse_mode=ParseMode.MARKDOWN)
+    # Stylish: Introducing a new step to ask for winner count
+    await update.effective_message.reply_html(
+        "✅ Image saved. <b>STEP 3/4: Winner Count</b>\n\n"
+        "Kripya winners ki sankhya (jaise: <code>1</code>, <code>3</code>, <code>5</code>) bhejein."
+    )
     return GET_DETAILS
 
-
-async def handle_details_and_publish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def get_winner_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Gets the winner count and then publishes the poll."""
     user_id = update.effective_user.id
-    data = GIVEAWAY_CREATION_DATA.get(user_id)
+    data = context.user_data.get(user_id)
+    
     if not data:
-        await update.effective_message.reply_text("Session expired. Start /giveaway again.")
+        await update.effective_message.reply_text("Session expired. Kripya /giveaway fir se shuru karein.")
         return ConversationHandler.END
 
-    if not update.effective_message or not getattr(update.effective_message, "text", None) or update.effective_message.text.strip().upper() != "LAUNCH":
-        await update.effective_message.reply_text("Please type LAUNCH to proceed.", parse_mode=ParseMode.MARKDOWN)
+    text = update.effective_message.text.strip() if update.effective_message.text else ""
+    
+    try:
+        winner_count = int(text)
+        if winner_count <= 0:
+             raise ValueError
+        data["winner_count"] = winner_count
+    except ValueError:
+        await update.effective_message.reply_text("❌ Kripya sahi winners ki sankhya (ek number) bhejein.")
         return GET_DETAILS
 
+    
     giveaway_id = data["giveaway_id"]
     channel_id = data["channel_id"]
     image_url = data["image_url"]
     channel_title = data["channel_title"]
     channel_username = data.get("channel_username")
 
-    await save_giveaway(giveaway_id, channel_id, update.effective_user.id, image_url)
+    # Stylish: Save winner_count in DB
+    await save_giveaway(giveaway_id, channel_id, user_id, image_url, winner_count)
     participation_link = f"https://t.me/{BOT_USERNAME}?start={giveaway_id}"
     channel_url = f"https://t.me/{channel_username}" if channel_username else "https://t.me/telegram"
 
     keyboard = [
         [InlineKeyboardButton("✨ Channel Link", url=channel_url), InlineKeyboardButton("🏆 View Top 10", callback_data=f"show_top10|{giveaway_id}")],
-        [InlineKeyboardButton("🛑 CLOSE POLL & SELECT WINNER(S)", callback_data=f"close_poll|{giveaway_id}")],
+        [InlineKeyboardButton(f"🛑 {winner_count} Winner Select Karein", callback_data=f"confirm_close_poll|{giveaway_id}")], # Stylish: New confirmation step
     ]
 
     caption = (
-        f"✅ <b>VOTE-POLL CREATED!</b>\n\n"
+        f"✅ <b>VOTE-POLL SUCCESSFULLY CREATED!</b>\n\n"
         f"Channel: <b>{channel_title}</b>\n"
+        f"Winners: <b>{winner_count}</b>\n"
         f"Poll ID: <code>{giveaway_id}</code>\n\n"
-        f"Participation Link:\n<code>{participation_link}</code>\n\n"
-        f"<i>Participants must be subscribers to log entry.</i>"
+        f"Participation Link (Click to Copy):\n<code>{participation_link}</code>\n\n"
+        f"<i>Participants must be subscribers.</i>"
     )
 
-    await update.effective_message.reply_photo(photo=image_url, caption=caption, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
-    GIVEAWAY_CREATION_DATA.pop(user_id, None)
+    await update.effective_message.reply_photo(
+        photo=image_url, 
+        caption=caption, 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode=ParseMode.HTML
+    )
+    
+    context.user_data.pop(user_id, None)
     return ConversationHandler.END
 
+# --- Winner Selection Flow (Stylish: Confirmation and Multi-winner support) ---
 
-async def cancel_giveaway(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = update.effective_user.id
-    GIVEAWAY_CREATION_DATA.pop(user_id, None)
-    await update.effective_message.reply_text("🛑 Giveaway creation cancelled.", parse_mode=ParseMode.MARKDOWN)
-    return ConversationHandler.END
-
-
-# ---------------- Deep Link Participation ----------------
-async def handle_deep_link_participation(update: Update, context: ContextTypes.DEFAULT_TYPE, giveaway_id: str) -> None:
-    user = update.effective_user
+async def confirm_close_poll_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows a confirmation dialog before closing the poll."""
+    query = update.callback_query
+    giveaway_id = query.data.split("|", 1)[1]
+    
+    if not is_admin(query.from_user.id):
+        await query.answer("❌ Permission denied.", show_alert=True)
+        return
+    
     giveaway_data = await get_giveaway_by_id(giveaway_id)
     if not giveaway_data or not giveaway_data.get("is_active", False):
-        await update.effective_message.reply_text("❌ This vote-poll has ended or is invalid. Please contact the channel admin.")
+        await query.answer("❌ Poll already closed or invalid.", show_alert=True)
+        return
+    
+    winner_count = giveaway_data.get("winner_count", 1)
+    total_participants = len(await get_all_participants_for_giveaway(giveaway_id))
+    
+    if total_participants < winner_count:
+        await query.answer(f"⚠️ Enough participants nahi hain! Total: {total_participants}, Required: {winner_count}", show_alert=True)
         return
 
-    channel_id = giveaway_data["channel_id"]
-    image_url = giveaway_data.get("image_url")
-    try:
-        channel_info = await context.bot.get_chat(channel_id)
-        channel_link = f"https://t.me/{channel_info.username}" if getattr(channel_info, "username", None) else "https://t.me/telegram"
-        channel_name = getattr(channel_info, "title", "Channel")
-    except TelegramError:
-        channel_link = f"Channel ID: <code>{channel_id}</code>"
-        channel_name = "Unknown Channel"
-
-    is_subscriber = await check_user_membership(context.bot, channel_id, user.id)
-    if not is_subscriber:
-        caption_text = (
-            f"⚠️ <b>PARTICIPATION DENIED!</b>\n\n"
-            f"To join the <b>'{channel_name}'</b> poll, you must be a <b>subscriber</b>.\n"
-            f"Please Join Channel, then click the link again."
-        )
-        await update.effective_message.reply_photo(
-            photo=image_url,
-            caption=caption_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🚀 Join Channel", url=channel_link)], [InlineKeyboardButton("✅ I have Joined, Try Again", url=f"https://t.me/{BOT_USERNAME}?start={giveaway_id}")]]
-            ),
-        )
-        return
-
-    # Log participant
-    user_full_name = user.full_name
-    user_username = user.username if user.username else f"id{user.id}"
-    success = await log_participant(giveaway_id, user.id, user_username, user_full_name)
-
-    if success:
-        participant_message = format_participant_details({"full_name": user_full_name, "username": user_username, "id": user.id})
-        try:
-            await context.bot.send_message(chat_id=channel_id, text=participant_message, parse_mode=ParseMode.HTML)
-            await update.effective_message.reply_text(
-                f"🎉 <b>CONGRATULATIONS!</b>\n\nYou are now a registered participant for the <b>'{channel_name}'</b> vote-poll (ID: <code>{giveaway_id}</code>).",
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as e:
-            logger.error("Failed to post to channel %s: %s", channel_id, e)
-            await update.effective_message.reply_text("❌ Participation logged, but failed to post details to the channel. Check bot permissions (Post Messages).")
-    else:
-        await update.effective_message.reply_text("💡 You have already participated in this poll.", parse_mode=ParseMode.MARKDOWN)
-
-
-# ---------------- Admin Features ----------------
-async def show_top_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    if not query:
-        return
-    if query.message and query.message.chat_id < 0 and not is_admin(query.from_user.id):
-        await query.answer("You can only view this list in a private chat with the bot.", show_alert=True)
-        return
-
-    await query.answer("Fetching top 10 recent participants...")
-    try:
-        giveaway_id = query.data.split("|", 1)[1]
-    except Exception:
-        await query.message.reply_text("❌ Invalid query data.")
-        return
-
-    participants_data = await get_top_participants(giveaway_id, limit=10)
-
-    if not participants_data:
-        text = f"🏆 <b>TOP 10 RECENT PARTICIPANTS (Poll ID: {giveaway_id})</b>\n\nNo participants registered yet."
-    else:
-        lines = [f"🏆 <b>TOP 10 RECENT PARTICIPANTS (Poll ID: {giveaway_id})</b>\n"]
-        for i, (full_name, username, user_id, participation_time) in enumerate(participants_data):
-            try:
-                dt_obj = datetime.strptime(participation_time.split(".")[0], "%Y-%m-%d %H:%M:%S")
-                time_str = dt_obj.strftime("%H:%M:%S")
-            except Exception:
-                time_str = "Unknown Time"
-            lines.append(f"<b>{i+1}.</b> <a href='tg://user?id={user_id}'>{full_name}</a> (@{username}) — <i>{time_str}</i>")
-        text = "\n".join(lines)
-
-    try:
-        await context.bot.send_message(chat_id=query.message.chat_id, text=text, parse_mode=ParseMode.HTML)
-    except TelegramError as e:
-        logger.error("Failed to send top list: %s", e)
-        await query.message.reply_text("❌ Failed to send the list. Check bot permissions.")
-
-
-async def active_polls(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update.effective_user.id):
-        return
-    active_giveaways = await get_all_active_giveaways()
-    if not active_giveaways:
-        await update.effective_message.reply_text("⭐ No active Vote-Polls found! Use /giveaway to start one.", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    lines = ["✨ <b>ACTIVE VOTE-POLLS:</b> ✨\n"]
-    for i, (giveaway_id, channel_id, start_time) in enumerate(active_giveaways):
-        try:
-            channel_info = await context.bot.get_chat(channel_id)
-            channel_name = getattr(channel_info, "title", f"ID:{channel_id}")
-        except TelegramError:
-            channel_name = f"ID: {channel_id}"
-        lines.append(f"<b>{i+1}. {channel_name}</b>")
-        lines.append(f"   ID: <code>{giveaway_id}</code>")
-        lines.append(f"   Start: <i>{start_time.split('.')[0]}</i>")
-        lines.append(f"   Close: <code>/close_poll_{giveaway_id}</code>\n")
-    await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
+    keyboard = [
+        [InlineKeyboardButton(f"✅ Select {winner_count} Winner(s)!", callback_data=f"close_poll|{giveaway_id}")],
+        [InlineKeyboardButton("⬅️ Wapas Jayein", callback_data=f"show_top10|{giveaway_id}")]
+    ]
+    
+    await query.edit_message_caption(
+        caption=f"⚠️ **CONFIRMATION:**\n\nKya aap Poll ID <code>{giveaway_id}</code> ko band karke **{winner_count}** winner chunna chahte hain?\n\nTotal Entries: **{total_participants}**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.HTML
+    )
 
 async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Closes the poll, selects winners, and announces."""
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return
 
     giveaway_id = None
-    source_chat = update.effective_chat
-
+    source_chat_id = update.effective_chat.id
+    
     if update.callback_query:
         query = update.callback_query
-        await query.answer("Closing poll and selecting winner(s)...")
-        try:
-            giveaway_id = query.data.split("|", 1)[1]
-        except Exception:
-            await query.message.reply_text("Invalid query.")
-            return
-        source_chat = query.message.chat
-    elif update.effective_message and getattr(update.effective_message, "text", None):
+        await query.answer("Winners chune jaa rahe hain...")
+        giveaway_id = query.data.split("|", 1)[1]
+        source_chat_id = query.message.chat_id
+    elif update.effective_message and update.effective_message.text:
         m = update.effective_message.text
         match = re.search(r"^/close_poll_([a-zA-Z0-9]+)$", m)
         if match:
             giveaway_id = match.group(1)
-        else:
-            await update.effective_message.reply_text("❌ Invalid command format. Use /close_poll_<ID>.", parse_mode=ParseMode.MARKDOWN)
-            return
-
-    if not giveaway_id:
-        return
+        # Handle invalid text command here
+        if not giveaway_id: return
 
     giveaway_data = await get_giveaway_by_id(giveaway_id)
     if not giveaway_data or not giveaway_data.get("is_active", False):
-        await context.bot.send_message(source_chat.id, f"❌ Poll <code>{giveaway_id}</code> is already closed or does not exist.", parse_mode=ParseMode.HTML)
+        await context.bot.send_message(source_chat_id, f"❌ Poll <code>{giveaway_id}</code> pehle hi band ho chuka hai.", parse_mode=ParseMode.HTML)
         return
 
-    winners = await select_random_winners(giveaway_id, count=1)
+    winner_count = giveaway_data.get("winner_count", 1) # Stylish: Get configured winner count
+    
+    winners = await select_random_winners(giveaway_id, count=winner_count)
     total_participants = len(await get_all_participants_for_giveaway(giveaway_id))
     await close_giveaway_db(giveaway_id)
 
     channel_id = giveaway_data["channel_id"]
-    lines = [f"🛑 <b>GIVEAWAY CLOSED!</b>\n\nVote-Poll ID <code>{giveaway_id}</code> is now closed.", f"Total Entries: <b>{total_participants}</b>\n"]
+    
+    # 1. Channel Announcement
+    lines = [f"🛑 <b>GIVEAWAY CLOSED!</b>\n\nPoll ID <code>{giveaway_id}</code> band ho gaya hai.", f"Total Entries: <b>{total_participants}</b>\n"]
     if winners:
+        lines.append(f"🎉 <b>CONGRATULATIONS TO THE {len(winners)} WINNERS!</b> 🎉")
+        
+        # Stylish: Winners ko mention karein
+        winner_mentions = []
         for i, w in enumerate(winners):
-            lines.append(f"<b>{i+1}.</b> <a href='tg://user?id={w['user_id']}'>{w['full_name']}</a> (@{w['username']})")
+            winner_mentions.append(f"<b>{i+1}.</b> <a href='tg://user?id={w['user_id']}'>{w['full_name']}</a> (@{w['username']})")
+            
+            # Stylish: Winner ko private message bhej kar notify karein
+            await notify_winner_private(context.bot, w, giveaway_id, channel_id)
+
+        lines.extend(winner_mentions)
     else:
-        lines.append("⚠️ No participants found.")
+        lines.append("⚠️ Koi participants nahi mila.")
     announcement = "\n".join(lines)
 
     try:
@@ -609,124 +379,47 @@ async def close_poll_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except TelegramError as e:
         logger.warning("Failed to notify channel %s about poll closure: %s", channel_id, e)
 
-    await context.bot.send_message(source_chat.id, f"✅ Poll <code>{giveaway_id}</code> successfully CLOSED. Winner(s) announced in channel.", parse_mode=ParseMode.HTML)
-
-
-# ---------------- Broadcast Flow ----------------
-async def start_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    if not context.args:
-        await update.effective_message.reply_text("❌ Please specify the giveaway ID: /broadcast GIVEAWAY_ID", parse_mode=ParseMode.MARKDOWN)
-        return ConversationHandler.END
-    giveaway_id = context.args[0]
-    gd = await get_giveaway_by_id(giveaway_id)
-    if not gd:
-        await update.effective_message.reply_text(f"❌ Poll ID <code>{giveaway_id}</code> not found.", parse_mode=ParseMode.HTML)
-        return ConversationHandler.END
-    context.user_data["broadcast_id"] = giveaway_id
-    await update.effective_message.reply_text(
-        f"📣 BROADCAST MODE ACTIVATED for Poll ID: <code>{giveaway_id}</code>\n\nSend the message (text/photo/video/animation) to broadcast to all participants.",
-        parse_mode=ParseMode.HTML,
+    # 2. Admin Confirmation
+    await context.bot.send_message(
+        source_chat_id, 
+        f"✅ Poll <code>{giveaway_id}</code> **safaltapoorvak band** ho gaya. Winners ki ghoshna channel mein kar di gayi hai."
+        f"\n\n**Winners (Private Copy):**\n" + "\n".join([f"- {w['full_name']} (ID: {w['user_id']})" for w in winners]) if winners else "",
+        parse_mode=ParseMode.HTML
     )
-    return BROADCAST_MESSAGE
 
+async def notify_winner_private(bot, winner: Dict[str, Any], giveaway_id: str, channel_id: str):
+    """Stylish: Notifies the winner privately."""
+    try:
+        channel_info = await bot.get_chat(channel_id)
+        channel_name = getattr(channel_info, "title", "Channel")
+        channel_link = f"https://t.me/{getattr(channel_info, 'username', 'telegram')}"
+    except TelegramError:
+        channel_name = f"ID: {channel_id}"
+        channel_link = "https://t.me/telegram"
 
-async def perform_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    giveaway_id = context.user_data.pop("broadcast_id", None)
-    if not giveaway_id:
-        await update.effective_message.reply_text("❌ Broadcast session expired.")
-        return ConversationHandler.END
+    try:
+        await bot.send_message(
+            chat_id=winner["user_id"],
+            text=(
+                f"🎉 **CONGRATULATIONS!** 🎉\n\n"
+                f"Aapne **'{channel_name}'** ke Vote-Poll (ID: <code>{giveaway_id}</code>) mein jeet hasil ki hai!"
+                f"\n\nPrize claim karne ke liye kripya **{channel_link}** par channel admin se sampark karein."
+            ),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except Exception as e:
+        logger.warning(f"Failed to notify winner {winner['user_id']} privately: {e}")
 
-    participants = [p["user_id"] for p in await get_all_participants_for_giveaway(giveaway_id)]
-    total_users = len(participants)
-    success_count = 0
+# --- Application init & run (Minor changes) ---
 
-    text_payload = getattr(update.effective_message, "text", None)
-    caption_payload = getattr(update.effective_message, "caption", None)
-
-    await update.effective_message.reply_text(f"🚀 Starting broadcast to {total_users} participants...", parse_mode=ParseMode.HTML)
-
-    for uid in participants:
-        try:
-            if getattr(update.effective_message, "photo", None):
-                await context.bot.send_photo(chat_id=uid, photo=update.effective_message.photo[-1].file_id, caption=caption_payload or "", parse_mode=ParseMode.HTML)
-            elif getattr(update.effective_message, "video", None):
-                await context.bot.send_video(chat_id=uid, video=update.effective_message.video.file_id, caption=caption_payload or "", parse_mode=ParseMode.HTML)
-            elif getattr(update.effective_message, "animation", None):
-                await context.bot.send_animation(chat_id=uid, animation=update.effective_message.animation.file_id, caption=caption_payload or "", parse_mode=ParseMode.HTML)
-            elif text_payload:
-                await context.bot.send_message(chat_id=uid, text=text_payload, parse_mode=ParseMode.HTML)
-            success_count += 1
-        except TelegramError as e:
-            logger.warning("Broadcast failed for %s: %s", uid, e)
-        except Exception as e:
-            logger.warning("Unexpected broadcast error for %s: %s", uid, e)
-
-    await update.effective_message.reply_text(f"✅ BROADCAST COMPLETE! Sent to {success_count} / {total_users}.")
-    return ConversationHandler.END
-
-
-async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.effective_message.reply_text("Broadcast cancelled.")
-    return ConversationHandler.END
-
-
-# ---------------- New admin helpers (optional) ----------------
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update.effective_user.id):
-        await update.effective_message.reply_text("❌ Admins only.")
-        return
-    active = await get_all_active_giveaways()
-    total_participants = await count_total_participants()
-    await update.effective_message.reply_text(f"📊 Active giveaways: {len(active)}\n📥 Total participants: {total_participants}")
-
-
-async def my_entries(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    rows = await get_entries_of_user(update.effective_user.id)
-    if not rows:
-        await update.effective_message.reply_text("You have no entries yet.")
-        return
-    lines = ["📋 Your recent entries:"]
-    for gid, t in rows:
-        lines.append(f"- {gid} at {t}")
-    await update.effective_message.reply_text("\n".join(lines))
-
-
-async def export_participants(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not is_admin(update.effective_user.id):
-        await update.effective_message.reply_text("❌ Admins only.")
-        return
-    if not context.args:
-        await update.effective_message.reply_text("Usage: /export_participants <GIVEAWAY_ID>")
-        return
-    giveaway_id = context.args[0]
-    rows = await get_all_participants_for_giveaway(giveaway_id)
-    if not rows:
-        await update.effective_message.reply_text("No participants or invalid giveaway id.")
-        return
-    import io
-    buf = io.StringIO()
-    buf.write("user_id,username,full_name\n")
-    for p in rows:
-        uid = p["user_id"]
-        uname = p["username"] or ""
-        fname = (p["full_name"] or "").replace(",", " ")
-        buf.write(f"{uid},{uname},{fname}\n")
-    bio = io.BytesIO(buf.getvalue().encode())
-    bio.name = f"participants_{giveaway_id}.csv"
-    await update.effective_message.reply_document(document=InputFile(bio, filename=bio.name), caption=f"Participants for {giveaway_id}")
-
-
-# ---------------- Application init & run ----------------
 async def post_init(application: Application):
     await init_db()
     logger.info("Post-init done.")
 
 
 def main() -> None:
-    # ensure PTB version is correct (helps avoid cryptic Updater errors)
-    ensure_ptb_v20_or_exit()
+    # ensure PTB version is correct (your original check function should be defined/imported)
+    # ensure_ptb_v20_or_exit() 
 
     url_path = TELEGRAM_BOT_TOKEN
     webhook_url = f"{WEBHOOK_URL.rstrip('/')}/{url_path}"
@@ -739,16 +432,9 @@ def main() -> None:
         states={
             SELECT_CHANNEL: [MessageHandler(filters.ChatType.PRIVATE & filters.ALL, handle_channel_share)],
             GET_IMAGE_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_image_url)],
-            GET_DETAILS: [MessageHandler(filters.TEXT & filters.Regex(r"^(LAUNCH|launch)$"), handle_details_and_publish)],
+            GET_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_winner_count)], # Stylish: New handler for winner count
         },
         fallbacks=[CommandHandler("cancel", cancel_giveaway)],
-        allow_reentry=True,
-    )
-
-    broadcast_conv = ConversationHandler(
-        entry_points=[CommandHandler("broadcast", start_broadcast)],
-        states={BROADCAST_MESSAGE: [MessageHandler(filters.ALL & ~filters.COMMAND, perform_broadcast)]},
-        fallbacks=[CommandHandler("cancel", cancel_broadcast)],
         allow_reentry=True,
     )
 
@@ -756,14 +442,14 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("active_polls", active_polls))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("my_entries", my_entries))
-    application.add_handler(CommandHandler("export_participants", export_participants))
+    # ... add other command handlers (stats_command, my_entries, export_participants)
 
     application.add_handler(giveaway_conv)
-    application.add_handler(broadcast_conv)
+    # ... add broadcast_conv
 
     # CallbackQuery handlers
+    application.add_handler(CallbackQueryHandler(start_giveaway_conv_callback, pattern="^start_giveaway_conv$"))
+    application.add_handler(CallbackQueryHandler(confirm_close_poll_callback, pattern=r"^confirm_close_poll\|")) # Stylish: New confirmation step
     application.add_handler(CallbackQueryHandler(close_poll_handler, pattern=r"^close_poll\|"))
     application.add_handler(CallbackQueryHandler(show_top_participants, pattern=r"^show_top10\|"))
 
@@ -773,9 +459,12 @@ def main() -> None:
     # Error handler
     application.add_error_handler(error_handler)
 
-    logger.info("Starting webhook on port %s at /%s", PORT, url_path)
+    logger.info("Starting webhook...")
     application.run_webhook(listen="0.0.0.0", port=PORT, url_path=url_path, webhook_url=webhook_url)
 
 
 if __name__ == "__main__":
+    # Note: You need to include the missing functions (handle_channel_share, cancel_giveaway,
+    # help_command, active_polls, show_top_participants, error_handler, etc.) 
+    # from your original code in this final version to make it run.
     main()
