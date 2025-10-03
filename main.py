@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 from telegram.constants import ChatMemberStatus
 from collections import defaultdict 
-from telegram.error import BadRequest, Forbidden # नई त्रुटियाँ जिन्हें हम संभालेंगे
+from telegram.error import BadRequest, Forbidden, TimedOut # TimedOut को भी जोड़ा गया
 
 # .env फ़ाइल से environment variables लोड करें
 load_dotenv()
@@ -68,7 +68,7 @@ def parse_poll_from_text(text: str) -> tuple | None:
 
 
 # -------------------------
-# Core Bot Functions (start, create_poll, etc. unchanged)
+# Core Bot Functions
 # -------------------------
 async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup: InlineKeyboardMarkup, welcome_message: str, chat_id=None):
     """इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।"""
@@ -247,7 +247,7 @@ async def start_channel_poll_conversation_cb(update: Update, context: ContextTyp
     return GET_CHANNEL_ID
 
 
-# 4. चैनल ID प्राप्त करें, बॉट एडमिन चेक करें और INSTANT LINK भेजें (unchanged)
+# 4. चैनल ID प्राप्त करें, बॉट एडमिन चेक करें और INSTANT LINK भेजें
 async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id_input = update.message.text.strip()
     user = update.effective_user
@@ -364,10 +364,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id_numeric = int(match.group(1))
     user_id = query.from_user.id
     
-    # 2. यूज़र का सब्सक्रिप्शन स्टेटस और त्रुटि निवारण चेक करें
-    is_subscriber = False
-    
-    # Vote Tracker Check (One-Time Vote Logic)
+    # 2. One-Time Vote Logic Check
     user_votes = VOTES_TRACKER.get(user_id, {})
     has_voted = user_votes.get(channel_id_numeric, False)
     
@@ -376,6 +373,9 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
         return
         
+    # 3. यूज़र का सब्सक्रिप्शन स्टेटस और त्रुटि निवारण चेक करें (Fixing the main error)
+    is_subscriber = False
+    
     try:
         chat_member = await context.bot.get_chat_member(chat_id=channel_id_numeric, user_id=user_id)
         # Check if status is member, administrator, or creator
@@ -388,30 +388,29 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # यूज़र को स्पष्ट अलर्ट दिखाएँ (आपके इमेज में दिखाया गया एरर)
         await query.answer(
-            text="🚨 वोटिंग त्रुटि: बॉट को चैनल सदस्यता जाँचने की अनुमति नहीं है। कृपया चैनल एडमिन को बॉट को **'Manage Users'** की अनुमति के साथ एडमिन अधिकार देने को कहें।",
+            text="🚨 वोटिंग त्रुटि: बॉट को चैनल सदस्यता जाँचने की अनुमति नहीं है। कृपया चैनल एडमिन को बॉट को **'उपयोगकर्ताओं को आमंत्रित करें' (Invite Users)** और **'उपयोगकर्ताओं को प्रबंधित करें' (Manage Users)** की अनुमति के साथ एडमिन अधिकार देने को कहें।",
             show_alert=True
         )
         return
     except Exception as e:
-        logging.error(f"Unknown error checking subscriber status: {e}")
+        # Catch any other unexpected error (fixing the 'Unexpected Error' alert)
+        logging.exception(f"Unknown error in handle_vote for {channel_id_numeric}")
         await query.answer(
-            text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया बाद में प्रयास करें।",
+            text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया चैनल एडमिन से संपर्क करें।",
             show_alert=True
         )
         return
 
-    # 3. वोटिंग लॉजिक
+    # 4. वोटिंग लॉजिक
     
     if not is_subscriber:
         # अगर सब्सक्राइबर नहीं है
-        # हम यहाँ एक बटन जोड़ेंगे जो यूज़र को चैनल पर ले जाए
-        
-        # चैनल की जानकारी प्राप्त करने का प्रयास करें
         try:
             chat_info = await context.bot.get_chat(chat_id=channel_id_numeric)
-            channel_url = chat_info.invite_link or f"https://t.me/{chat_info.username}" if chat_info.username else ""
+            # यहाँ chat_info.invite_link को प्राथमिकता दें
+            channel_url = chat_info.invite_link or f"https://t.me/{chat_info.username}" if chat_info.username else None
         except Exception:
-            channel_url = ""
+            channel_url = None
 
         # अगर चैनल URL मिला तो बटन के साथ अलर्ट दिखाएँ
         if channel_url:
@@ -422,7 +421,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             await query.answer(
-                text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें। (चैनल लिंक अनुपलब्ध है)", 
+                text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें।", 
                 show_alert=True
             )
         
@@ -442,7 +441,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # यूज़र को कन्फर्मेशन दें
         await query.answer(text=f"✅ आपका वोट ({current_vote_count}वां) दर्ज कर लिया गया है। धन्यवाद!", show_alert=True)
         
-        # 4. बटन को नए वोट काउंट के साथ अपडेट करें
+        # 5. बटन को नए वोट काउंट के साथ अपडेट करें
         original_markup = query.message.reply_markup
         new_keyboard = []
         
@@ -452,7 +451,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for button in row:
                     if button.callback_data and button.callback_data.startswith('vote_'):
                         # वोट बटन को अपडेट करें
-                        # अब बटन पर केवल काउंट दिखेगा, जिससे यूज़र को यह भी पता चले कि वोट हो गया है।
                         new_button_text = f"✅ Vote Now ({current_vote_count} Votes)"
                         new_row.append(InlineKeyboardButton(new_button_text, callback_data=button.callback_data))
                     else:
@@ -465,17 +463,19 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # केवल मार्कअप (बटन) को एडिट करें
             await query.edit_message_reply_markup(reply_markup=new_markup)
         except Exception as e:
+             # अगर बटन अपडेट नहीं हो पाता तो सिर्फ़ लॉग करें
              logging.warning(f"Could not edit vote message markup: {e}")
             
 # -------------------------
-# main() (unchanged)
+# main() (Modified to handle Timeouts better for stability)
 # -------------------------
 def main():
     if not BOT_TOKEN:
         logging.error("BOT_TOKEN environment variable सेट नहीं है।")
         return
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    # connection_pool_size बढ़ाएँ, खासकर Render जैसे प्लेटफॉर्म पर
+    application = ApplicationBuilder().token(BOT_TOKEN).pool_size(10).build() 
 
     # 1. /start (Deep Link Logic Included)
     application.add_handler(CommandHandler("start", start))
@@ -501,7 +501,8 @@ def main():
     application.add_handler(link_conv_handler)
 
     logging.info("बॉट शुरू हो रहा है...")
-    application.run_polling(poll_interval=3)
+    # Polling interval को थोड़ा कम किया गया ताकि रेंडर पर टाइमआउट कम हों
+    application.run_polling(poll_interval=2) 
 
 
 if __name__ == '__main__':
