@@ -12,9 +12,10 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
+# Note: pool_size was causing AttributeError, so we remove it here.
 from telegram.constants import ChatMemberStatus
 from collections import defaultdict 
-from telegram.error import BadRequest, Forbidden, TimedOut 
+from telegram.error import BadRequest, Forbidden 
 
 # .env फ़ाइल से environment variables लोड करें
 load_dotenv()
@@ -66,7 +67,7 @@ def parse_poll_from_text(text: str) -> tuple | None:
 
 
 # -------------------------
-# Core Bot Functions (Ordered before main() to fix NameError)
+# Core Bot Functions (Defined before main() to fix NameError)
 # -------------------------
 async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup: InlineKeyboardMarkup, welcome_message: str, chat_id=None):
     """इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।"""
@@ -346,7 +347,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # -------------------------
-# New Vote Handler (Improved Error Handling)
+# Vote Handler (Fixing Subscription Check Error)
 # -------------------------
 async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -367,7 +368,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     has_voted = user_votes.get(channel_id_numeric, False)
     
     if has_voted:
-        # अगर पहले ही वोट कर चुका है
         await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
         return
         
@@ -375,7 +375,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_subscriber = False
     
     try:
-        # यहाँ बॉट सब्सक्रिप्शन चेक करता है
         chat_member = await context.bot.get_chat_member(chat_id=channel_id_numeric, user_id=user_id)
         is_subscriber = chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
         
@@ -383,14 +382,14 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # यह त्रुटि तब आती है जब बॉट एडमिन तो है, लेकिन उसके पास 'Manage Users' की अनुमति नहीं है।
         logging.error(f"Bot failed to check subscriber status for {channel_id_numeric}: {e}")
         
-        # यूज़र को सबसे स्पष्ट अलर्ट दिखाएँ
+        # यूज़र को सबसे स्पष्ट अलर्ट दिखाएँ (Fix for the Telegram Alert)
         await query.answer(
             text="🚨 वोटिंग त्रुटि: बॉट चैनल सदस्यता जाँचने में असमर्थ है। कृपया चैनल एडमिन सुनिश्चित करें कि बॉट के पास **'उपयोगकर्ताओं को प्रबंधित करें' (Manage Users)** की अनुमति है।",
             show_alert=True
         )
         return
     except Exception as e:
-        # Catch any other unexpected error (fixing the 'Unexpected Error' alert)
+        # Catch any other unexpected error (Fix for the 'अप्रत्याशित त्रुटि हुई' alert)
         logging.exception(f"Unknown error in handle_vote for {channel_id_numeric}")
         await query.answer(
             text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया दोबारा प्रयास करें या चैनल एडमिन से संपर्क करें।",
@@ -404,12 +403,10 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # अगर सब्सक्राइबर नहीं है
         try:
             chat_info = await context.bot.get_chat(chat_id=channel_id_numeric)
-            # यहाँ chat_info.invite_link को प्राथमिकता दें
             channel_url = chat_info.invite_link or f"https://t.me/{chat_info.username}" if chat_info.username else None
         except Exception:
             channel_url = None
 
-        # अगर चैनल URL मिला तो बटन के साथ अलर्ट दिखाएँ
         if channel_url:
             await query.answer(
                 text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें।", 
@@ -427,15 +424,12 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # सफल वोट
         
-        # वोट को ट्रैक करें (अस्थायी!)
         user_votes[channel_id_numeric] = True
         VOTES_TRACKER[user_id] = user_votes
         
-        # वोट काउंट बढ़ाएँ
         VOTES_COUNT[channel_id_numeric] += 1
         current_vote_count = VOTES_COUNT[channel_id_numeric]
         
-        # यूज़र को कन्फर्मेशन दें
         await query.answer(text=f"✅ आपका वोट ({current_vote_count}वां) दर्ज कर लिया गया है। धन्यवाद!", show_alert=True)
         
         # 5. बटन को नए वोट काउंट के साथ अपडेट करें
@@ -447,7 +441,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_row = []
                 for button in row:
                     if button.callback_data and button.callback_data.startswith('vote_'):
-                        # वोट बटन को अपडेट करें
                         new_button_text = f"✅ Vote Now ({current_vote_count} Votes)"
                         new_row.append(InlineKeyboardButton(new_button_text, callback_data=button.callback_data))
                     else:
@@ -457,21 +450,20 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_markup = InlineKeyboardMarkup(new_keyboard)
         
         try:
-            # केवल मार्कअप (बटन) को एडिट करें
             await query.edit_message_reply_markup(reply_markup=new_markup)
         except Exception as e:
              logging.warning(f"Could not edit vote message markup: {e}")
             
 # -------------------------
-# main() (Modified for stability)
+# main() (Modified for Render stability)
 # -------------------------
 def main():
     if not BOT_TOKEN:
         logging.error("BOT_TOKEN environment variable सेट नहीं है।")
         return
 
-    # connection_pool_size और timeout बढ़ाएँ
-    application = ApplicationBuilder().token(BOT_TOKEN).pool_size(15).build() 
+    # pool_size removed to fix AttributeError shown in your logs.
+    application = ApplicationBuilder().token(BOT_TOKEN).build() 
 
     # 1. /start (Deep Link Logic Included)
     application.add_handler(CommandHandler("start", start))
