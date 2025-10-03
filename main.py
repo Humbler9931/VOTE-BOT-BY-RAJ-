@@ -13,7 +13,8 @@ from telegram.ext import (
     CallbackQueryHandler
 )
 from telegram.constants import ChatMemberStatus
-from collections import defaultdict # defaultdict का उपयोग VOTES_COUNT को आसान बनाने के लिए
+from collections import defaultdict 
+from telegram.error import BadRequest, Forbidden # नई त्रुटियाँ जिन्हें हम संभालेंगे
 
 # .env फ़ाइल से environment variables लोड करें
 load_dotenv()
@@ -36,7 +37,7 @@ LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
 # 1. किस यूजर ने वोट किया: {user_id: {channel_id: True}}
 VOTES_TRACKER = {} 
 # 2. चैनल पर कुल वोट: {channel_id: total_count}
-VOTES_COUNT = defaultdict(int) # अगर Key नहीं है तो डिफ़ॉल्ट वैल्यू 0 होगी
+VOTES_COUNT = defaultdict(int) 
 
 # -------------------------
 # Utility / Parsing Helpers
@@ -67,7 +68,7 @@ def parse_poll_from_text(text: str) -> tuple | None:
 
 
 # -------------------------
-# Core Bot Functions
+# Core Bot Functions (start, create_poll, etc. unchanged)
 # -------------------------
 async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup: InlineKeyboardMarkup, welcome_message: str, chat_id=None):
     """इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।"""
@@ -246,7 +247,7 @@ async def start_channel_poll_conversation_cb(update: Update, context: ContextTyp
     return GET_CHANNEL_ID
 
 
-# 4. चैनल ID प्राप्त करें, बॉट एडमिन चेक करें और INSTANT LINK भेजें
+# 4. चैनल ID प्राप्त करें, बॉट एडमिन चेक करें और INSTANT LINK भेजें (unchanged)
 async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id_input = update.message.text.strip()
     user = update.effective_user
@@ -347,11 +348,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # -------------------------
-# New Vote Handler
+# New Vote Handler (Improved Error Handling)
 # -------------------------
 async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    # ध्यान दें: query.answer() में 5 सेकंड से ज़्यादा समय नहीं लगना चाहिए, अन्यथा Telegram इसे खारिज कर देगा।
     
     # 1. Callback data से Channel ID निकालें
     data = query.data
@@ -366,32 +366,67 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 2. यूज़र का सब्सक्रिप्शन स्टेटस और त्रुटि निवारण चेक करें
     is_subscriber = False
+    
+    # Vote Tracker Check (One-Time Vote Logic)
+    user_votes = VOTES_TRACKER.get(user_id, {})
+    has_voted = user_votes.get(channel_id_numeric, False)
+    
+    if has_voted:
+        # अगर पहले ही वोट कर चुका है
+        await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
+        return
+        
     try:
         chat_member = await context.bot.get_chat_member(chat_id=channel_id_numeric, user_id=user_id)
+        # Check if status is member, administrator, or creator
         is_subscriber = chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
         
-    except Exception as e:
-        # अगर बॉट को `get_chat_member` की अनुमति नहीं है (एडमिन नहीं है), तो यह Error आएगा।
-        logging.error(f"Error checking subscriber status in handle_vote: {e}")
+    except (Forbidden, BadRequest) as e:
+        # Forbidden (403): Bot is not an admin, or was kicked.
+        # BadRequest (400): Chat ID is invalid, or the bot can't see the user.
+        logging.error(f"Bot failed to check subscriber status for {channel_id_numeric}: {e}")
+        
+        # यूज़र को स्पष्ट अलर्ट दिखाएँ (आपके इमेज में दिखाया गया एरर)
         await query.answer(
-            text="🚨 वोटिंग त्रुटि: बॉट को चैनल सदस्यता जांचने की अनुमति नहीं है। कृपया चैनल एडमिन को बॉट को एडमिन अधिकार देने को कहें।",
+            text="🚨 वोटिंग त्रुटि: बॉट को चैनल सदस्यता जाँचने की अनुमति नहीं है। कृपया चैनल एडमिन को बॉट को **'Manage Users'** की अनुमति के साथ एडमिन अधिकार देने को कहें।",
+            show_alert=True
+        )
+        return
+    except Exception as e:
+        logging.error(f"Unknown error checking subscriber status: {e}")
+        await query.answer(
+            text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया बाद में प्रयास करें।",
             show_alert=True
         )
         return
 
     # 3. वोटिंग लॉजिक
     
-    # ग्लोबल ट्रैकर में यूज़र की एंट्री देखें
-    user_votes = VOTES_TRACKER.get(user_id, {})
-    has_voted = user_votes.get(channel_id_numeric, False)
-
     if not is_subscriber:
         # अगर सब्सक्राइबर नहीं है
-        await query.answer(text="❌ आप वोट नहीं कर सकते। वोट करने के लिए पहले चैनल को सब्सक्राइब करें।", show_alert=True)
-    
-    elif has_voted:
-        # अगर पहले ही वोट कर चुका है
-        await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
+        # हम यहाँ एक बटन जोड़ेंगे जो यूज़र को चैनल पर ले जाए
+        
+        # चैनल की जानकारी प्राप्त करने का प्रयास करें
+        try:
+            chat_info = await context.bot.get_chat(chat_id=channel_id_numeric)
+            channel_url = chat_info.invite_link or f"https://t.me/{chat_info.username}" if chat_info.username else ""
+        except Exception:
+            channel_url = ""
+
+        # अगर चैनल URL मिला तो बटन के साथ अलर्ट दिखाएँ
+        if channel_url:
+            await query.answer(
+                text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें।", 
+                show_alert=True,
+                url=channel_url
+            )
+        else:
+            await query.answer(
+                text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें। (चैनल लिंक अनुपलब्ध है)", 
+                show_alert=True
+            )
+        
+        return
     
     else:
         # सफल वोट
@@ -408,8 +443,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(text=f"✅ आपका वोट ({current_vote_count}वां) दर्ज कर लिया गया है। धन्यवाद!", show_alert=True)
         
         # 4. बटन को नए वोट काउंट के साथ अपडेट करें
-        
-        # ओरिजिनल मैसेज के बटन प्राप्त करें
         original_markup = query.message.reply_markup
         new_keyboard = []
         
@@ -419,24 +452,23 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for button in row:
                     if button.callback_data and button.callback_data.startswith('vote_'):
                         # वोट बटन को अपडेट करें
+                        # अब बटन पर केवल काउंट दिखेगा, जिससे यूज़र को यह भी पता चले कि वोट हो गया है।
                         new_button_text = f"✅ Vote Now ({current_vote_count} Votes)"
                         new_row.append(InlineKeyboardButton(new_button_text, callback_data=button.callback_data))
                     else:
-                        # अन्य बटन (जैसे Go to Channel) को अपरिवर्तित रखें
                         new_row.append(button)
                 new_keyboard.append(new_row)
         
         new_markup = InlineKeyboardMarkup(new_keyboard)
         
         try:
-            # कैप्शन को अपरिवर्तित रखते हुए सिर्फ़ मार्कअप (बटन) को एडिट करें
+            # केवल मार्कअप (बटन) को एडिट करें
             await query.edit_message_reply_markup(reply_markup=new_markup)
         except Exception as e:
              logging.warning(f"Could not edit vote message markup: {e}")
-             await query.answer(text="✅ वोट दर्ज किया गया, लेकिन बटन अपडेट नहीं हो सका।")
             
 # -------------------------
-# main()
+# main() (unchanged)
 # -------------------------
 def main():
     if not BOT_TOKEN:
@@ -451,8 +483,7 @@ def main():
     # 2. simple /poll for chats
     application.add_handler(CommandHandler("poll", create_poll))
 
-    # 3. Vote Callback Handler (New)
-    # vote_ followed by numeric ID pattern
+    # 3. Vote Callback Handler 
     application.add_handler(CallbackQueryHandler(handle_vote, pattern=r'^vote_(-?\d+)$')) 
 
     # 4. conversation for instant link
