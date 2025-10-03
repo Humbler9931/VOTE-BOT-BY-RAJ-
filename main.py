@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 from telegram.constants import ChatMemberStatus
 from collections import defaultdict 
-from telegram.error import BadRequest, Forbidden, TimedOut # TimedOut को भी जोड़ा गया
+from telegram.error import BadRequest, Forbidden, TimedOut 
 
 # .env फ़ाइल से environment variables लोड करें
 load_dotenv()
@@ -34,9 +34,7 @@ LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
 (GET_CHANNEL_ID,) = range(1)
 
 # डेटाबेस के बिना वोट ट्रैक करने के लिए दो ग्लोबल डिक्शनरी (अस्थायी!)
-# 1. किस यूजर ने वोट किया: {user_id: {channel_id: True}}
 VOTES_TRACKER = {} 
-# 2. चैनल पर कुल वोट: {channel_id: total_count}
 VOTES_COUNT = defaultdict(int) 
 
 # -------------------------
@@ -68,7 +66,7 @@ def parse_poll_from_text(text: str) -> tuple | None:
 
 
 # -------------------------
-# Core Bot Functions
+# Core Bot Functions (Ordered before main() to fix NameError)
 # -------------------------
 async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup: InlineKeyboardMarkup, welcome_message: str, chat_id=None):
     """इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।"""
@@ -377,18 +375,17 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_subscriber = False
     
     try:
+        # यहाँ बॉट सब्सक्रिप्शन चेक करता है
         chat_member = await context.bot.get_chat_member(chat_id=channel_id_numeric, user_id=user_id)
-        # Check if status is member, administrator, or creator
         is_subscriber = chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
         
     except (Forbidden, BadRequest) as e:
-        # Forbidden (403): Bot is not an admin, or was kicked.
-        # BadRequest (400): Chat ID is invalid, or the bot can't see the user.
+        # यह त्रुटि तब आती है जब बॉट एडमिन तो है, लेकिन उसके पास 'Manage Users' की अनुमति नहीं है।
         logging.error(f"Bot failed to check subscriber status for {channel_id_numeric}: {e}")
         
-        # यूज़र को स्पष्ट अलर्ट दिखाएँ (आपके इमेज में दिखाया गया एरर)
+        # यूज़र को सबसे स्पष्ट अलर्ट दिखाएँ
         await query.answer(
-            text="🚨 वोटिंग त्रुटि: बॉट को चैनल सदस्यता जाँचने की अनुमति नहीं है। कृपया चैनल एडमिन को बॉट को **'उपयोगकर्ताओं को आमंत्रित करें' (Invite Users)** और **'उपयोगकर्ताओं को प्रबंधित करें' (Manage Users)** की अनुमति के साथ एडमिन अधिकार देने को कहें।",
+            text="🚨 वोटिंग त्रुटि: बॉट चैनल सदस्यता जाँचने में असमर्थ है। कृपया चैनल एडमिन सुनिश्चित करें कि बॉट के पास **'उपयोगकर्ताओं को प्रबंधित करें' (Manage Users)** की अनुमति है।",
             show_alert=True
         )
         return
@@ -396,7 +393,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Catch any other unexpected error (fixing the 'Unexpected Error' alert)
         logging.exception(f"Unknown error in handle_vote for {channel_id_numeric}")
         await query.answer(
-            text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया चैनल एडमिन से संपर्क करें।",
+            text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया दोबारा प्रयास करें या चैनल एडमिन से संपर्क करें।",
             show_alert=True
         )
         return
@@ -463,19 +460,18 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # केवल मार्कअप (बटन) को एडिट करें
             await query.edit_message_reply_markup(reply_markup=new_markup)
         except Exception as e:
-             # अगर बटन अपडेट नहीं हो पाता तो सिर्फ़ लॉग करें
              logging.warning(f"Could not edit vote message markup: {e}")
             
 # -------------------------
-# main() (Modified to handle Timeouts better for stability)
+# main() (Modified for stability)
 # -------------------------
 def main():
     if not BOT_TOKEN:
         logging.error("BOT_TOKEN environment variable सेट नहीं है।")
         return
 
-    # connection_pool_size बढ़ाएँ, खासकर Render जैसे प्लेटफॉर्म पर
-    application = ApplicationBuilder().token(BOT_TOKEN).pool_size(10).build() 
+    # connection_pool_size और timeout बढ़ाएँ
+    application = ApplicationBuilder().token(BOT_TOKEN).pool_size(15).build() 
 
     # 1. /start (Deep Link Logic Included)
     application.add_handler(CommandHandler("start", start))
@@ -501,7 +497,6 @@ def main():
     application.add_handler(link_conv_handler)
 
     logging.info("बॉट शुरू हो रहा है...")
-    # Polling interval को थोड़ा कम किया गया ताकि रेंडर पर टाइमआउट कम हों
     application.run_polling(poll_interval=2) 
 
 
