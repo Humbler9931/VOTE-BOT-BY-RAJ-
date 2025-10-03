@@ -35,7 +35,7 @@ logging.basicConfig(
 # एनवायर्नमेंट वेरिएबल्स
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 IMAGE_URL = os.getenv("IMAGE_URL", "https://picsum.photos/600/300")
-LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
+LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@databasefilebots")
 
 # Conversation states
 (GET_CHANNEL_ID,) = range(1)
