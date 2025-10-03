@@ -12,7 +12,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
-# Note: pool_size was causing AttributeError, so we remove it here.
+# आवश्यक मॉड्यूल ही रखें
 from telegram.constants import ChatMemberStatus
 from collections import defaultdict 
 from telegram.error import BadRequest, Forbidden 
@@ -67,7 +67,7 @@ def parse_poll_from_text(text: str) -> tuple | None:
 
 
 # -------------------------
-# Core Bot Functions (Defined before main() to fix NameError)
+# Core Bot Functions 
 # -------------------------
 async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup: InlineKeyboardMarkup, welcome_message: str, chat_id=None):
     """इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।"""
@@ -371,7 +371,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
         return
         
-    # 3. यूज़र का सब्सक्रिप्शन स्टेटस और त्रुटि निवारण चेक करें (Fixing the main error)
+    # 3. यूज़र का सब्सक्रिप्शन स्टेटस और त्रुटि निवारण चेक करें
     is_subscriber = False
     
     try:
@@ -462,7 +462,7 @@ def main():
         logging.error("BOT_TOKEN environment variable सेट नहीं है।")
         return
 
-    # pool_size removed to fix AttributeError shown in your logs.
+    # AttributeError को ठीक करने के लिए pool_size को हटा दिया गया है।
     application = ApplicationBuilder().token(BOT_TOKEN).build() 
 
     # 1. /start (Deep Link Logic Included)
@@ -489,6 +489,7 @@ def main():
     application.add_handler(link_conv_handler)
 
     logging.info("बॉट शुरू हो रहा है...")
+    # Render पर स्थिरता के लिए poll_interval 2 सेकंड है।
     application.run_polling(poll_interval=2) 
 
 
