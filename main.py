@@ -17,7 +17,7 @@ logging.basicConfig(
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 # नोट: आप इस URL को Render/GitHub/Telegram के फ़ाइल ID से बदल सकते हैं 
 # या इसे local storage से लोड करने के लिए फाइल पाथ दे सकते हैं।
-IMAGE_URL = "https://picsum.photos/600/300" 
+IMAGE_URL = "https://envs.sh/KXK.jpg/IMG20251003570.jpg" 
 
 # /start कमांड के लिए फ़ंक्शन (ADVANCED)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -27,14 +27,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("📝 नया वोट बनाएँ", callback_data='create_new_poll'),
-            InlineKeyboardButton("❓ गाइड/मदद", url='https://telegra.ph/Bot-Guide-01-01')
+            InlineKeyboardButton("❓ गाइड/मदद", url='https://t.me/teamrajweb')
         ],
         [
             InlineKeyboardButton("📊 मेरे बनाए वोट्स", callback_data='my_polls_list'),
-            InlineKeyboardButton("🔗 सोर्स कोड", url='https://github.com/yourusername/vote-bot')
+            InlineKeyboardButton("🔗 सोर्स कोड", url='https://t.me/Onlymrabhi01)
         ],
         [
-            InlineKeyboardButton("📢 चैनल जॉइन करें", url='https://t.me/your_channel')
+            InlineKeyboardButton("📢 चैनल जॉइन करें", url='https://t.me/narzoxbot)
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
