@@ -12,6 +12,7 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
+from telegram.constants import ChatMemberStatus
 
 # .env फ़ाइल से environment variables लोड करें
 load_dotenv()
@@ -30,6 +31,10 @@ LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
 # कन्वर्सेशन स्टेट्स
 (GET_CHANNEL_ID,) = range(1)
 
+# डेटाबेस के बिना वोट ट्रैक करने के लिए एक ग्लोबल डिक्शनरी (अस्थायी!)
+# {user_id: {channel_id: True/False}}
+VOTES_TRACKER = {} 
+# ------------------------------------------------------------------
 
 # -------------------------
 # Utility / Parsing Helpers (Poll functions kept for /poll command)
@@ -127,8 +132,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🤖 **Bot:** @{bot_username}"
                 )
 
-                # 'Go to Channel' या 'Connect with User' बटन
+                # --- ADVANCED VOTE BUTTON LOGIC ---
+                # Callback Data: 'vote_<channel_numeric_id>'
+                vote_callback_data = f'vote_{target_channel_id_numeric}'
+
                 channel_keyboard = []
+                # 1. Vote Button
+                channel_keyboard.append([
+                    InlineKeyboardButton("✅ Vote Now", callback_data=vote_callback_data)
+                ])
+                
+                # 2. Go to Channel / Connect button
                 if channel_url:
                     channel_keyboard.append([
                         InlineKeyboardButton("➡️ Go to Channel", url=channel_url)
@@ -254,12 +268,10 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 2. सफलता: INSTANT UNIQUE LINK बनाएं और भेजें
             
             # chat_info.id का उपयोग करके Deep Link payload बनाएं
-            # यह ID हमेशा numeric होती है।
             raw_id_str = str(chat_info.id)
             if raw_id_str.startswith('-100'):
                 link_channel_id = raw_id_str[4:] 
             else:
-                 # Group ID के लिए
                 link_channel_id = raw_id_str.replace('-', '')
 
             # Payload: link_<channel_id_clean>
@@ -331,6 +343,82 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # -------------------------
+# New Vote Handler
+# -------------------------
+async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer(text="वोट प्रोसेस किया जा रहा है...")
+    
+    # 1. Callback data से Channel ID निकालें
+    data = query.data
+    match = re.match(r'vote_(-?\d+)', data)
+    
+    if not match:
+        await query.edit_message_caption(caption="❌ त्रुटि: वोट ID सही नहीं है।", parse_mode='Markdown')
+        return
+
+    channel_id_numeric = int(match.group(1))
+    user_id = query.from_user.id
+    
+    # 2. यूज़र का सब्सक्रिप्शन स्टेटस चेक करें
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id=channel_id_numeric, user_id=user_id)
+        is_subscriber = chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+        
+    except Exception as e:
+        logging.error(f"Error checking subscriber status: {e}")
+        await query.edit_message_caption(caption="⚠️ त्रुटि: चैनल सब्सक्रिप्शन चेक नहीं किया जा सका।", parse_mode='Markdown')
+        return
+
+    # 3. वोटिंग लॉजिक
+    
+    # ग्लोबल ट्रैकर में यूज़र की एंट्री देखें
+    user_votes = VOTES_TRACKER.get(user_id, {})
+    has_voted = user_votes.get(channel_id_numeric, False)
+
+    if not is_subscriber:
+        # अगर सब्सक्राइबर नहीं है
+        await query.answer(text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें।", show_alert=True)
+    
+    elif has_voted:
+        # अगर पहले ही वोट कर चुका है
+        await query.answer(text="🗳️ आप पहले ही इस चैनल के लिए वोट कर चुके हैं।", show_alert=True)
+    
+    else:
+        # सफल वोट
+        
+        # वोट को ट्रैक करें (अस्थायी!)
+        user_votes[channel_id_numeric] = True
+        VOTES_TRACKER[user_id] = user_votes
+
+        # मैसेज को अपडेट करें (वोट काउंटर या सिर्फ़ कन्फर्मेशन)
+        
+        # (यह हिस्सा वोट काउंटर के लिए है, जिसे हम डेटाबेस के बिना छोड़ रहे हैं)
+        # हम सिर्फ़ कन्फर्मेशन मैसेज भेजेंगे
+        
+        # यूज़र को कन्फर्मेशन दें
+        await query.answer(text="✅ आपका वोट दर्ज कर लिया गया है। धन्यवाद!", show_alert=True)
+        
+        # ओरिजिनल मैसेज के कैप्शन को अपडेट करें
+        original_caption = query.message.caption
+        new_caption = f"{original_caption}\n\n**✅ Vote Recorded!**"
+        
+        # बटन हटाएँ (ताकि दोबारा वोट न हो)
+        new_markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Voted", callback_data='ignore')]
+        ])
+        
+        try:
+            await query.edit_message_caption(
+                caption=new_caption,
+                reply_markup=new_markup,
+                parse_mode='Markdown'
+            )
+        except Exception:
+             # अगर मैसेज अपडेट नहीं हो पाता तो सिर्फ़ लॉग करें
+            logging.warning("Could not edit vote message caption.")
+            
+# -------------------------
 # main()
 # -------------------------
 def main():
@@ -346,7 +434,10 @@ def main():
     # 2. simple /poll for chats
     application.add_handler(CommandHandler("poll", create_poll))
 
-    # 3. conversation for instant link
+    # 3. Vote Callback Handler (New)
+    application.add_handler(CallbackQueryHandler(handle_vote, pattern='^vote_(-?\d+)$'))
+
+    # 4. conversation for instant link
     link_conv_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(start_channel_poll_conversation_cb, pattern='^start_channel_conv$'),
