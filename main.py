@@ -114,27 +114,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
 
                 # 2. Notification message चैनल में भेजें
+                
+                # चैनल का पब्लिक URL प्राप्त करने का प्रयास करें
+                channel_url = chat_info.invite_link or f"https://t.me/{chat_info.username}" if chat_info.username else None
+                
                 notification_message = (
-                    f"**🤝 नया यूजर कनेक्ट हुआ!**\n\n"
-                    f"👤 **नाम:** [{user.first_name}](tg://user?id={user.id})\n"
-                    f"🆔 **ID:** `{user.id}`\n"
+                    f"**🚨 This is now participate!**\n\n"
+                    f"👤 **यूजर का नाम:** [{user.first_name}](tg://user?id={user.id})\n"
+                    f"🆔 **यूजर ID:** `{user.id}`\n"
                     f"🌐 **Username:** {f'@{user.username}' if user.username else 'N/A'}\n\n"
-                    f"🤖 **बॉट Username:** @{bot_username}\n\n"
-                    f"यह यूजर **`{channel_title}`** से जुड़ा है।"
+                    f"🔗 **चैनल:** `{channel_title}`\n"
+                    f"🤖 **बॉट:** @{bot_username}"
                 )
 
-                # 'Connect with User' बटन
-                connect_keyboard = [[
-                    InlineKeyboardButton("👋 Connect with User", url=f"tg://user?id={user.id}")
-                ]]
-                connect_markup = InlineKeyboardMarkup(connect_keyboard)
+                # 'Go to Channel' बटन (Vote button replacement)
+                channel_keyboard = []
+                if channel_url:
+                    # यदि URL मिला तो Go to Channel बटन
+                    channel_keyboard.append([
+                        InlineKeyboardButton("🗳️ Go to Channel", url=channel_url)
+                    ])
+                else:
+                    # यदि URL नहीं मिला तो Connect with User बटन
+                     channel_keyboard.append([
+                        InlineKeyboardButton("👋 Connect with User", url=f"tg://user?id={user.id}")
+                    ])
+
+                channel_markup = InlineKeyboardMarkup(channel_keyboard)
 
                 await context.bot.send_photo(
                     chat_id=target_channel_id_numeric,
                     photo=IMAGE_URL,
                     caption=notification_message,
                     parse_mode='Markdown',
-                    reply_markup=connect_markup
+                    reply_markup=channel_markup
                 )
                 
                 return
