@@ -28,7 +28,7 @@ IMAGE_URL = os.getenv("IMAGE_URL", "https://picsum.photos/600/300")
 LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
 
 # कन्वर्सेशन स्टेट्स
-(GET_CHANNEL_ID, CREATE_CHANNEL_POLL) = range(2)
+(GET_CHANNEL_ID,) = range(1) # केवल एक स्टेट बचा है
 
 
 # -------------------------
@@ -63,10 +63,7 @@ def parse_poll_from_text(text: str) -> tuple | None:
 # Core Bot Functions
 # -------------------------
 async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup: InlineKeyboardMarkup, welcome_message: str, chat_id=None):
-    """
-    इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।
-    chat_id parameter जोड़ा गया ताकि Deep Link से भी message भेजा जा सके।
-    """
+    """इमेज या टेक्स्ट के साथ स्टार्ट मैसेज भेजता है।"""
     target_chat_id = chat_id if chat_id else update.effective_chat.id
     try:
         await context.bot.send_photo(
@@ -99,66 +96,70 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         # Expected Payload: poll_<message_id>_<channel_id_without_@>
         payload = context.args[0]
-        match = re.match(r'poll_(\d+)_(-?\d+)', payload) # Check for ID pattern
+        # इस बार link_id सिर्फ channel ID होगी (क्योंकि कोई poll ID नहीं है)
+        match = re.match(r'link_(\d+)', payload)
 
         if match:
-            message_id, channel_id = match.groups()
-            
-            # Channel ID को int में बदलने की ज़रूरत नहीं, सीधे string ID (-100...) रखें
-            target_channel_id = int(channel_id) if channel_id.startswith('-100') else f"@{channel_id}" 
+            channel_id_str = match.groups()[0]
+            # Telegram Channel ID हमेशा -100 से शुरू होती है, अगर यह सिर्फ digits है तो इसे -100 लगाकर पूरा करें
+            if len(channel_id_str) < 14 and not channel_id_str.startswith('-100'):
+                target_channel_id = int(f"-100{channel_id_str}")
+            else:
+                # यह Numeric ID है, इसे int में रखें
+                target_channel_id = int(channel_id_str) 
 
             notification_message = (
-                f"**🎉 नया सब्सक्राइबर जुड़ा!**\n\n"
+                f"**🤝 नया यूजर कनेक्ट हुआ!**\n\n"
                 f"👤 **नाम:** [{user.first_name}](tg://user?id={user.id})\n"
-                f"🆔 **ID:** `{user.id}`\n"
-                f"🌐 **Username:** {f'@{user.username}' if user.username else 'N/A'}\n\n"
-                f"इस यूजर ने आपके वोट में रुचि दिखाई है।"
+                f"🌐 **Username:** {f'@{user.username}' if user.username else 'N/A'}\n"
+                f"इस यूजर ने आपके चैनल **`{target_channel_id}`** से जुड़ने में रुचि दिखाई है।"
             )
 
             try:
                 # 1. Notification message चैनल में भेजें
-                vote_keyboard = [[
-                    InlineKeyboardButton("🗳️ Go to Vote", url=f"https://t.me/c/{channel_id}/{message_id}")
+                connect_keyboard = [[
+                    InlineKeyboardButton("👋 Connect with User", url=f"tg://user?id={user.id}")
                 ]]
-                vote_markup = InlineKeyboardMarkup(vote_keyboard)
+                connect_markup = InlineKeyboardMarkup(connect_keyboard)
 
                 await context.bot.send_photo(
                     chat_id=target_channel_id,
                     photo=IMAGE_URL,
                     caption=notification_message,
                     parse_mode='Markdown',
-                    reply_markup=vote_markup
+                    reply_markup=connect_markup
                 )
                 
                 # 2. User को कन्फर्मेशन दें
                 await update.message.reply_text(
-                    f"✅ आपको वोट में शामिल कर लिया गया है!\n"
-                    f"चैनल **`{target_channel_id}`** में आपकी एक्टिविटी की सूचना भेज दी गई है।"
+                    f"✅ आप चैनल **`{target_channel_id}`** से जुड़ गए हैं!\n"
+                    f"आपकी एक्टिविटी की सूचना चैनल में भेज दी गई है।"
                 )
                 return
 
             except Exception as e:
                 logging.error(f"Deep link notification failed: {e}")
-                await update.message.reply_text("माफ़ करना, वोट तक पहुँचने में त्रुटि हुई।")
+                await update.message.reply_text("माफ़ करना, चैनल से जुड़ने में त्रुटि हुई।")
                 # Fallback to main start menu
     
-    # --- REGULAR START MENU ---
+    # --- REGULAR START MENU (Stylish Buttons) ---
     keyboard = [
         [
-            InlineKeyboardButton("📝 चैनल के लिए वोट बनाएँ", callback_data='start_channel_poll_conv'),
-            InlineKeyboardButton("➕ Add Me to Group", url=f"https://t.me/{bot_username}?startgroup=true") # NEW BUTTON
+            InlineKeyboardButton("🔗 चैनल लिंक पाएँ", callback_data='start_channel_conv'),
+            InlineKeyboardButton("➕ ग्रुप में जोड़ें", url=f"https://t.me/{bot_username}?startgroup=true")
         ],
-        [InlineKeyboardButton("📊 मेरे बनाए वोट्स", callback_data='my_polls_list'),
-         InlineKeyboardButton("❓ गाइड/मदद", url='https://t.me/teamrajweb')],
-        [InlineKeyboardButton("🔗 सोर्स कोड", url='https://t.me/teamrajweb'),
-         InlineKeyboardButton("📢 चैनल जॉइन करें", url='https://t.me/narzoxbot')]
+        [
+            InlineKeyboardButton("📊 मेरे वोट्स", callback_data='my_polls_list'),
+            InlineKeyboardButton("❓ गाइड", url='https://t.me/teamrajweb'),
+            InlineKeyboardButton("📢 चैनल", url='https://t.me/narzoxbot')
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     welcome_message = (
         "**👑 वोट बॉट में आपका स्वागत है! 👑**\n\n"
-        "मैं किसी भी ग्रुप या चैनल के लिए **सुंदर और सुरक्षित** वोट बनाने में माहिर हूँ। "
-        "चैनल के लिए वोट बनाने हेतु *'📝 चैनल के लिए वोट बनाएँ'* पर क्लिक करें।\n\n"
+        "मैं ग्रुप या चैनल के लिए **सुंदर और सुरक्षित** वोट बनाने में माहिर हूँ। "
+        "चैनल को कनेक्ट कर **तुरंत लिंक** पाने हेतु *'🔗 चैनल लिंक पाएँ'* पर क्लिक करें।\n\n"
         "__**Stylish Quote:**__\n"
         "*\"आपके विचार मायने रखते हैं। वोट दें, बदलाव लाएँ।\"*\n"
         "~ The Voting Bot"
@@ -167,9 +168,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_start_message(update, context, reply_markup, welcome_message)
 
 
-# 2. साधारण /poll कमांड (chat में)
+# 2. साधारण /poll कमांड (chat में) - यह अब कन्वर्सेशन के बाहर है
 async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # context.args से parse करने की कोशिश
+    # यह सिर्फ़ पुराने /poll कमांड को रखने के लिए है
     parsed = parse_poll_from_args(context.args)
     if not parsed:
         text = update.message.text if update.message else ""
@@ -179,7 +180,7 @@ async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not parsed:
         await update.message.reply_text(
             "कृपया सही फॉर्मेट का उपयोग करें:\n"
-            "`/poll [सवाल]? [ऑप्शन1], [ऑप्शन2], ...`\n(कम से कम 2 और अधिकतम 10 विकल्प)",
+            "`/poll [सवाल]? [ऑप्शन1], [ऑप्शन2], ...`",
             parse_mode='Markdown'
         )
         return
@@ -204,51 +205,86 @@ async def start_channel_poll_conversation_cb(update: Update, context: ContextTyp
     query = update.callback_query
     await query.answer()
     
-    # Send a new message instead of editing for better flow
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text="👋 **चैनल सेटअप:**\n"
-             "कृपया उस **चैनल का @username या ID** भेजें जिसके लिए आप वोट बनाना चाहते हैं।\n\n"
-             "*(उदाहरण: `@my_channel_name` या `-100123456789`)*\n\n"
+        text="👋 **चैनल लिंक सेटअप:**\n"
+             "कृपया उस **चैनल का @username या ID** भेजें जिसके लिए आप लिंक जनरेट करना चाहते हैं।\n\n"
              "**नोट:** मुझे इस चैनल का **एडमिन** होना ज़रूरी है।",
         parse_mode='Markdown'
     )
     return GET_CHANNEL_ID
 
 
-# 4. चैनल ID प्राप्त करें और बॉट एडमिन चेक करें
+# 4. चैनल ID प्राप्त करें, बॉट एडमिन चेक करें और INSTANT LINK भेजें
 async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id_input = update.message.text.strip()
-    
+    user = update.effective_user
+
     # ID detection and normalization logic
     numeric_match = re.match(r'^-?\d+$', channel_id_input)
     if numeric_match:
-        channel_id = int(channel_id_input) # Telegram API prefers int for known IDs
+        channel_id = int(channel_id_input) # Numeric ID (-100...)
     else:
         channel_id = channel_id_input if channel_id_input.startswith('@') else f"@{channel_id_input}"
-
-    context.user_data['temp_channel_id'] = channel_id
 
     try:
         bot_user = await context.bot.get_me()
         bot_id = bot_user.id
+        bot_username = bot_user.username or "bot"
 
+        # 1. बॉट एडमिन चेक करें
         chat_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=bot_id)
         
         if getattr(chat_member, "status", "").lower() in ['administrator', 'creator']:
+            
+            # 2. सफलता: INSTANT LINK बनाएं और भेजें
+            
+            # Channel ID को Deep Link में उपयोग के लिए साफ़ करें (बिना @ और -100 prefix के)
+            link_channel_id = str(channel_id).replace('@', '')
+            if link_channel_id.startswith('-100'):
+                link_channel_id = link_channel_id[4:] # -100 हटाएँ
+
+            # Payload: link_<channel_id_clean>
+            deep_link_payload = f"link_{link_channel_id}"
+            
+            # शेयर करने योग्य लिंक
+            share_url = f"https://t.me/{bot_username}?start={deep_link_payload}"
+
+            share_keyboard = [[
+                InlineKeyboardButton("🔗 अपनी लिंक शेयर करें", url=share_url),
+            ]]
+            share_markup = InlineKeyboardMarkup(share_keyboard)
+            
             await update.message.reply_text(
-                "✅ बॉट सफलतापूर्वक चैनल **एडमिन** है।\n"
-                "अब आप अपना वोट बना सकते हैं। कृपया **`/poll [सवाल]? [ऑप्शन1], [ऑप्शन2], ...`** फॉर्मेट में भेजें।\n"
-                "*(या /cancel दबाकर रद्द करें)*",
-                parse_mode='Markdown'
+                f"✅ चैनल **{channel_id}** सफलतापूर्वक कनेक्ट हो गया है!\n\n"
+                f"**आपकी शेयर करने योग्य लिंक तैयार है!** जब कोई इस लिंक पर क्लिक करेगा, तो आपके चैनल में एक नोटिफिकेशन जाएगा।",
+                parse_mode='Markdown',
+                reply_markup=share_markup
             )
-            return CREATE_CHANNEL_POLL
+            
+            # 3. LOG_CHANNEL_USERNAME में सूचना भेजें (Optional)
+            if LOG_CHANNEL_USERNAME:
+                log_message = (
+                    f"**🔗 नया चैनल लिंक बना!**\n"
+                    f"यूजर: [{user.first_name}](tg://user?id={user.id})\n"
+                    f"चैनल: `{channel_id}`\n"
+                    f"शेयर लिंक: {share_url}"
+                )
+                await context.bot.send_message(
+                    chat_id=LOG_CHANNEL_USERNAME,
+                    text=log_message,
+                    parse_mode='Markdown'
+                )
+
+            return ConversationHandler.END # कन्वर्सेशन समाप्त
+
         else:
+            # 3. असफलता: बॉट एडमिन नहीं है
             await update.message.reply_text(
                 "❌ मैं आपके चैनल का **एडमिन नहीं** हूँ।\n"
-                "कृपया मुझे एडमिन (कम से कम **'Post Messages'** की अनुमति के साथ) बनाएँ और फिर से चैनल का @username भेजें।"
+                "कृपया मुझे एडमिन (कम से कम **'Post Messages'** की अनुमति के साथ) बनाएँ और फिर से चैनल का @username/ID भेजें।"
             )
-            return GET_CHANNEL_ID
+            return GET_CHANNEL_ID # इसी स्टेट में रहें
 
     except Exception:
         logging.exception("Error checking admin status")
@@ -260,86 +296,9 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return GET_CHANNEL_ID
 
 
-# 5. चैनल के लिए /poll (Conversation में)
-async def create_channel_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    channel_id = context.user_data.get('temp_channel_id')
-    user = update.effective_user
-
-    # Poll data parse करें
-    text = update.message.text if update.message else ""
-    text = re.sub(r'^/poll(@\w+)?\s*', '', text, count=1)
-    parsed = parse_poll_from_text(text)
-    
-    if not parsed:
-        await update.message.reply_text("वोट का फॉर्मेट गलत है। कृपया फिर से प्रयास करें।")
-        return CREATE_CHANNEL_POLL
-
-    question, options = parsed
-
-    try:
-        # 1. चैनल में वोट भेजें
-        poll_message = await context.bot.send_poll(
-            chat_id=channel_id,
-            question=question,
-            options=options,
-            is_anonymous=False,
-            allows_multiple_answers=False,
-        )
-
-        # 2. Deep Link बनाएं
-        bot_user = await context.bot.get_me()
-        bot_username = bot_user.username or "bot"
-        
-        # Channel ID को string में कन्वर्ट करें और '-100' हटा दें (Telegram Deep Link format)
-        link_channel_id = str(channel_id).replace('@', '').replace('-100', '')
-        
-        # Payload: poll_<message_id>_<channel_id_without_@_and_-100>
-        deep_link_payload = f"poll_{poll_message.message_id}_{link_channel_id}"
-        
-        # 3. शेयर करने योग्य लिंक भेजें
-        share_keyboard = [[
-            InlineKeyboardButton(
-                "🔗 वोट लिंक शेयर करें (Start Link)",
-                url=f"https://t.me/{bot_username}?start={deep_link_payload}"
-            )
-        ]]
-        share_markup = InlineKeyboardMarkup(share_keyboard)
-        
-        await update.message.reply_text(
-            f"✅ आपका वोट **{channel_id}** चैनल में सफलतापूर्वक भेज दिया गया है!\n\n"
-            "**यह शेयर करने योग्य लिंक है। जब कोई इस पर क्लिक करेगा, तो आपके चैनल में एक नोटिफिकेशन जाएगा:**",
-            parse_mode='Markdown',
-            reply_markup=share_markup
-        )
-        
-        # LOG_CHANNEL_USERNAME में सूचना भेजें (Optional, but kept for logging)
-        if LOG_CHANNEL_USERNAME:
-            log_message = (
-                f"**📊 नया चैनल वोट बना!**\n"
-                f"यूजर: [{user.first_name}](tg://user?id={user.id})\n"
-                f"चैनल: `{channel_id}`"
-            )
-            await context.bot.send_message(
-                chat_id=LOG_CHANNEL_USERNAME,
-                text=log_message,
-                parse_mode='Markdown'
-            )
-
-        # cleanup temp data
-        context.user_data.pop('temp_channel_id', None)
-        return ConversationHandler.END
-
-    except Exception as e:
-        logging.exception("Failed to send poll to target channel")
-        await update.message.reply_text(f"वोट भेजने में त्रुटि हुई: {e}")
-        return CREATE_CHANNEL_POLL
-
-
-# 6. cancel handler
+# 5. cancel handler
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text('कन्वर्सेशन रद्द कर दिया गया है।')
-    # cleanup
-    context.user_data.pop('temp_channel_id', None)
     return ConversationHandler.END
 
 
@@ -359,20 +318,19 @@ def main():
     # 2. simple /poll for chats
     application.add_handler(CommandHandler("poll", create_poll))
 
-    # 3. conversation for channel polls
-    poll_conv_handler = ConversationHandler(
+    # 3. conversation for instant link
+    link_conv_handler = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(start_channel_poll_conversation_cb, pattern='^start_channel_poll_conv$'),
+            CallbackQueryHandler(start_channel_poll_conversation_cb, pattern='^start_channel_conv$'),
         ],
         states={
             GET_CHANNEL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_channel_id)],
-            CREATE_CHANNEL_POLL: [CommandHandler('poll', create_channel_poll)],
         },
         fallbacks=[CommandHandler('cancel', cancel)],
         allow_reentry=False
     )
 
-    application.add_handler(poll_conv_handler)
+    application.add_handler(link_conv_handler)
 
     logging.info("बॉट शुरू हो रहा है...")
     application.run_polling(poll_interval=3)
