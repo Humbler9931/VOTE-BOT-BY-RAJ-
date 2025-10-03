@@ -34,7 +34,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("🔗 सोर्स कोड", url='https://t.me/teamrajweb')
         ],
         [
-            InlineKeyboardButton("📢 चैनल जॉइन करें", url='https://t.me/narzoxbot)
+            InlineKeyboardButton("📢 चैनल जॉइन करें", url='https://t.me/narzoxbot')
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
