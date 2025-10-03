@@ -1,7 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler
 
 # .env फ़ाइल से environment variables लोड करें
@@ -13,20 +13,63 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# टेलीग्राम बॉट टोकन को environment variable से प्राप्त करें
+# टेलीग्राम बॉट टोकन और एक वैकल्पिक इमेज URL को environment variable से प्राप्त करें
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+# नोट: आप इस URL को Render/GitHub/Telegram के फ़ाइल ID से बदल सकते हैं 
+# या इसे local storage से लोड करने के लिए फाइल पाथ दे सकते हैं।
+IMAGE_URL = "https://picsum.photos/600/300" 
 
-# /start कमांड के लिए फ़ंक्शन
+# /start कमांड के लिए फ़ंक्शन (ADVANCED)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """जब यूजर /start कमांड भेजता है तो एक स्वागत संदेश भेजता है।"""
-    welcome_message = (
-        "नमस्ते! मैं एक वोट बॉट हूँ।\n"
-        "नया वोट बनाने के लिए /poll [सवाल]? [ऑप्शन1], [ऑप्शन2], ... का उपयोग करें।\n\n"
-        "उदाहरण: /poll आज खाने में क्या है? दाल-चावल, रोटी-सब्जी, पिज्जा"
-    )
-    await update.message.reply_text(welcome_message)
+    """एक एडवांस स्वागत संदेश, इमेज, और इनलाइन बटन्स भेजता है।"""
+    
+    # 1. स्टाइलिश इनलाइन बटन्स बनाएँ
+    keyboard = [
+        [
+            InlineKeyboardButton("📝 नया वोट बनाएँ", callback_data='create_new_poll'),
+            InlineKeyboardButton("❓ गाइड/मदद", url='https://telegra.ph/Bot-Guide-01-01')
+        ],
+        [
+            InlineKeyboardButton("📊 मेरे बनाए वोट्स", callback_data='my_polls_list'),
+            InlineKeyboardButton("🔗 सोर्स कोड", url='https://github.com/yourusername/vote-bot')
+        ],
+        [
+            InlineKeyboardButton("📢 चैनल जॉइन करें", url='https://t.me/your_channel')
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-# /poll कमांड के लिए फ़ंक्शन
+    # 2. एडवांस वेलकम मैसेज
+    welcome_message = (
+        "**🎉 वोट बॉट में आपका स्वागत है! 🎉**\n\n"
+        "मैं ग्रुप्स और चैट्स में आसानी से वोट बनाने में आपकी मदद करता हूँ। "
+        "नीचे दिए गए बटनों का उपयोग करके अपनी यात्रा शुरू करें।\n\n"
+        "**_एडवांस फीचर:_** आप अपने वोट में इमोजी और लिंक भी इस्तेमाल कर सकते हैं!\n\n"
+        "**_Quote:_**\n"
+        "\"सफलता का रहस्य मतदान है: हर आवाज़ मायने रखती है।\"\n"
+        "~ Voting System"
+    )
+    
+    # 3. इमेज के साथ मैसेज भेजें
+    try:
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=IMAGE_URL,
+            caption=welcome_message,
+            parse_mode='Markdown', # मैसेज में **bold** और _italic_ फॉर्मेटिंग के लिए
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        # अगर इमेज लोड नहीं होती है, तो सिर्फ़ टेक्स्ट मैसेज भेजें
+        logging.error(f"Image send failed: {e}. Sending text message instead.")
+        await update.message.reply_text(
+            welcome_message,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+
+# /poll कमांड के लिए फ़ंक्शन (पिछला कोड)
 async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """यूजर के इनपुट से एक नया वोट (poll) बनाता है और भेजता है।"""
     args = context.args
@@ -70,12 +113,13 @@ async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=update.effective_chat.id,
         question=question,
         options=options,
-        is_anonymous=False,  # आप इसे True भी कर सकते हैं अगर आप गुमनाम (anonymous) वोट चाहते हैं
-        allows_multiple_answers=False, # आप इसे True भी कर सकते हैं 
+        is_anonymous=False, 
+        allows_multiple_answers=False, 
     )
 
     await update.message.reply_text("आपका वोट सफलतापूर्वक बना दिया गया है!")
 
+# मुख्य फ़ंक्शन
 def main():
     """बॉट शुरू करने का मुख्य फ़ंक्शन।"""
     if not BOT_TOKEN:
