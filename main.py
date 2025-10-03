@@ -2,7 +2,7 @@ import os
 import re
 import logging
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -28,11 +28,11 @@ IMAGE_URL = os.getenv("IMAGE_URL", "https://picsum.photos/600/300")
 LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
 
 # कन्वर्सेशन स्टेट्स
-(GET_CHANNEL_ID,) = range(1) # केवल एक स्टेट बचा है
+(GET_CHANNEL_ID,) = range(1)
 
 
 # -------------------------
-# Utility / Parsing Helpers
+# Utility / Parsing Helpers (Poll functions kept for /poll command)
 # -------------------------
 def parse_poll_from_args(args: list) -> tuple | None:
     """/poll कमांड से सवाल और विकल्पों को पार्स करता है।"""
@@ -91,50 +91,52 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     bot_user = await context.bot.get_me()
     bot_username = bot_user.username
-
+    
     # --- DEEP LINK LOGIC ---
     if context.args:
-        # Expected Payload: poll_<message_id>_<channel_id_without_@>
         payload = context.args[0]
-        # इस बार link_id सिर्फ channel ID होगी (क्योंकि कोई poll ID नहीं है)
         match = re.match(r'link_(\d+)', payload)
 
         if match:
             channel_id_str = match.groups()[0]
-            # Telegram Channel ID हमेशा -100 से शुरू होती है, अगर यह सिर्फ digits है तो इसे -100 लगाकर पूरा करें
-            if len(channel_id_str) < 14 and not channel_id_str.startswith('-100'):
-                target_channel_id = int(f"-100{channel_id_str}")
-            else:
-                # यह Numeric ID है, इसे int में रखें
-                target_channel_id = int(channel_id_str) 
-
-            notification_message = (
-                f"**🤝 नया यूजर कनेक्ट हुआ!**\n\n"
-                f"👤 **नाम:** [{user.first_name}](tg://user?id={user.id})\n"
-                f"🌐 **Username:** {f'@{user.username}' if user.username else 'N/A'}\n"
-                f"इस यूजर ने आपके चैनल **`{target_channel_id}`** से जुड़ने में रुचि दिखाई है।"
-            )
+            # ID को वापस full numeric format (-100...) में बदलें
+            target_channel_id_numeric = int(f"-100{channel_id_str}") 
 
             try:
-                # 1. Notification message चैनल में भेजें
+                # चैनल का नाम प्राप्त करें (Display के लिए)
+                chat_info = await context.bot.get_chat(chat_id=target_channel_id_numeric)
+                channel_title = chat_info.title
+                
+                # 1. User को कन्फर्मेशन मैसेज भेजें (You are participate)
+                await update.message.reply_text(
+                    f"🎉 **आप सफलतापूर्वक शामिल हो गए हैं!**\n\n"
+                    f"आप चैनल **`{channel_title}`** से कनेक्ट हो गए हैं। आपकी एक्टिविटी की सूचना चैनल में भेज दी गई है।"
+                )
+
+                # 2. Notification message चैनल में भेजें
+                notification_message = (
+                    f"**🤝 नया यूजर कनेक्ट हुआ!**\n\n"
+                    f"👤 **नाम:** [{user.first_name}](tg://user?id={user.id})\n"
+                    f"🆔 **ID:** `{user.id}`\n"
+                    f"🌐 **Username:** {f'@{user.username}' if user.username else 'N/A'}\n\n"
+                    f"🤖 **बॉट Username:** @{bot_username}\n\n"
+                    f"यह यूजर **`{channel_title}`** से जुड़ा है।"
+                )
+
+                # 'Connect with User' बटन
                 connect_keyboard = [[
                     InlineKeyboardButton("👋 Connect with User", url=f"tg://user?id={user.id}")
                 ]]
                 connect_markup = InlineKeyboardMarkup(connect_keyboard)
 
                 await context.bot.send_photo(
-                    chat_id=target_channel_id,
+                    chat_id=target_channel_id_numeric,
                     photo=IMAGE_URL,
                     caption=notification_message,
                     parse_mode='Markdown',
                     reply_markup=connect_markup
                 )
                 
-                # 2. User को कन्फर्मेशन दें
-                await update.message.reply_text(
-                    f"✅ आप चैनल **`{target_channel_id}`** से जुड़ गए हैं!\n"
-                    f"आपकी एक्टिविटी की सूचना चैनल में भेज दी गई है।"
-                )
                 return
 
             except Exception as e:
@@ -145,7 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # --- REGULAR START MENU (Stylish Buttons) ---
     keyboard = [
         [
-            InlineKeyboardButton("🔗 चैनल लिंक पाएँ", callback_data='start_channel_conv'),
+            InlineKeyboardButton("🔗 लिंक पाएँ", callback_data='start_channel_conv'),
             InlineKeyboardButton("➕ ग्रुप में जोड़ें", url=f"https://t.me/{bot_username}?startgroup=true")
         ],
         [
@@ -158,8 +160,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_message = (
         "**👑 वोट बॉट में आपका स्वागत है! 👑**\n\n"
-        "मैं ग्रुप या चैनल के लिए **सुंदर और सुरक्षित** वोट बनाने में माहिर हूँ। "
-        "चैनल को कनेक्ट कर **तुरंत लिंक** पाने हेतु *'🔗 चैनल लिंक पाएँ'* पर क्लिक करें।\n\n"
+        "चैनल को कनेक्ट कर **तुरंत शेयर लिंक** पाने हेतु *'🔗 लिंक पाएँ'* पर क्लिक करें।\n\n"
         "__**Stylish Quote:**__\n"
         "*\"आपके विचार मायने रखते हैं। वोट दें, बदलाव लाएँ।\"*\n"
         "~ The Voting Bot"
@@ -168,9 +169,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_start_message(update, context, reply_markup, welcome_message)
 
 
-# 2. साधारण /poll कमांड (chat में) - यह अब कन्वर्सेशन के बाहर है
+# 2. साधारण /poll कमांड (chat में)
 async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # यह सिर्फ़ पुराने /poll कमांड को रखने के लिए है
+    # This remains the same for creating simple polls outside the conversation flow.
     parsed = parse_poll_from_args(context.args)
     if not parsed:
         text = update.message.text if update.message else ""
@@ -249,25 +250,37 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # शेयर करने योग्य लिंक
             share_url = f"https://t.me/{bot_username}?start={deep_link_payload}"
-
+            
+            # चैनल का नाम प्राप्त करें (Display के लिए)
+            chat_info = await context.bot.get_chat(chat_id=channel_id)
+            channel_title = chat_info.title
+            
+            # 3. यूज़र को लिंक दिखाएँ (कॉपी करने योग्य)
+            await update.message.reply_text(
+                f"✅ चैनल **{channel_title}** सफलतापूर्वक कनेक्ट हो गया है!\n\n"
+                f"**आपकी शेयर करने योग्य लिंक तैयार है। इसे कॉपी करें:**\n"
+                f"```\n{share_url}\n```\n\n"
+                f"**या इस बटन का उपयोग करें:**",
+                parse_mode='Markdown'
+            )
+            
+            # 4. बटन भेजें (लिंक को आसान बनाने के लिए)
             share_keyboard = [[
                 InlineKeyboardButton("🔗 अपनी लिंक शेयर करें", url=share_url),
             ]]
             share_markup = InlineKeyboardMarkup(share_keyboard)
             
             await update.message.reply_text(
-                f"✅ चैनल **{channel_id}** सफलतापूर्वक कनेक्ट हो गया है!\n\n"
-                f"**आपकी शेयर करने योग्य लिंक तैयार है!** जब कोई इस लिंक पर क्लिक करेगा, तो आपके चैनल में एक नोटिफिकेशन जाएगा।",
-                parse_mode='Markdown',
+                "शेयर करने के लिए बटन दबाएँ:",
                 reply_markup=share_markup
             )
             
-            # 3. LOG_CHANNEL_USERNAME में सूचना भेजें (Optional)
+            # 5. LOG_CHANNEL_USERNAME में सूचना भेजें (Optional)
             if LOG_CHANNEL_USERNAME:
                 log_message = (
                     f"**🔗 नया चैनल लिंक बना!**\n"
                     f"यूजर: [{user.first_name}](tg://user?id={user.id})\n"
-                    f"चैनल: `{channel_id}`\n"
+                    f"चैनल: `{channel_title}`\n"
                     f"शेयर लिंक: {share_url}"
                 )
                 await context.bot.send_message(
@@ -287,7 +300,7 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return GET_CHANNEL_ID # इसी स्टेट में रहें
 
     except Exception:
-        logging.exception("Error checking admin status")
+        logging.exception("Error checking admin status or getting chat info")
         await update.message.reply_text(
             "⚠️ **चैनल तक पहुँचने में त्रुटि** हुई। सुनिश्चित करें कि:\n"
             "1. चैनल का @username/ID सही है।\n"
