@@ -16,7 +16,7 @@ from telegram.ext import (
 from telegram.constants import ChatMemberStatus
 from collections import defaultdict 
 from telegram.error import BadRequest, Forbidden 
-from typing import Tuple, Optional # Type Hinting के लिए
+from typing import Tuple, Optional, Dict
 
 # .env फ़ाइल से environment variables लोड करें
 load_dotenv()
@@ -36,14 +36,15 @@ LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@teamrajweb")
 (GET_CHANNEL_ID,) = range(1)
 
 # डेटाबेस के बिना वोट ट्रैक करने के लिए दो ग्लोबल डिक्शनरी (अस्थायी!)
-VOTES_TRACKER = defaultdict(dict) # {user_id: {channel_id: True}}
-VOTES_COUNT = defaultdict(int) # {channel_id: count}
+# उन्नत टाइपिंग का उपयोग
+VOTES_TRACKER: Dict[int, Dict[int, bool]] = defaultdict(dict) # {user_id: {channel_id: True}}
+VOTES_COUNT: Dict[int, int] = defaultdict(int) # {channel_id: count}
 
 # ----------------------------------------
 # Utility / Parsing Helpers
 # ----------------------------------------
 def parse_poll_from_text(text: str) -> Optional[Tuple[str, list]]:
-    """किसी raw text में से poll parse करें। सवाल और ऑप्शन की सीमा 2-10 रखी गई है।"""
+    """/poll कमांड के लिए सवाल और विकल्पों को पार्स करता है।"""
     if not text or '?' not in text:
         return None
     try:
@@ -92,13 +93,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_user = await context.bot.get_me()
     bot_username = bot_user.username
     
-    # --- DEEP LINK LOGIC (Channel Join Tracker) ---
+    # --- DEEP LINK LOGIC ---
     if context.args:
         payload = context.args[0]
         match = re.match(r'link_(\d+)', payload)
 
         if match:
             channel_id_str = match.groups()[0]
+            # Telegram Channel IDs must be prefixed with -100
             target_channel_id_numeric = int(f"-100{channel_id_str}") 
             
             current_vote_count = VOTES_COUNT[target_channel_id_numeric]
@@ -112,10 +114,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     f"✨ **You've Successfully Connected!** 🎉\n\n"
                     f"आप चैनल **`{channel_title}`** से सफलतापूर्वक जुड़ गए हैं।\n"
-                    f"यह लिंक अब सक्रिय (Active) है। आप अब वोट दे सकते हैं, अगर किसी पोस्ट पर वोटिंग सक्रिय है।"
+                    f"यह लिंक अब सक्रिय (Active) है। आप अब वोट दे सकते हैं।"
                 )
 
-                # B. Notification message चैनल में भेजें (Advanced Style)
+                # B. Notification message चैनल में भेजें
                 notification_message = (
                     f"**👑 New Participant Joined! 👑**\n"
                     f"--- **Participation Details** ---\n\n"
@@ -126,20 +128,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🤖 **Bot:** @{bot_username}"
                 )
 
-                # --- ADVANCED VOTE BUTTON LOGIC ---
+                # ADVANCED VOTE BUTTON LOGIC
                 vote_callback_data = f'vote_{target_channel_id_numeric}'
                 vote_button_text = f"✅ Vote Now ({current_vote_count} Votes)"
 
-                channel_keyboard = []
-                channel_keyboard.append([
-                    InlineKeyboardButton(vote_button_text, callback_data=vote_callback_data)
-                ])
-                
+                channel_keyboard = [[InlineKeyboardButton(vote_button_text, callback_data=vote_callback_data)]]
                 if channel_url:
-                    channel_keyboard.append([
-                        InlineKeyboardButton("➡️ Go to Channel", url=channel_url)
-                    ])
-
+                    channel_keyboard.append([InlineKeyboardButton("➡️ Go to Channel", url=channel_url)])
                 channel_markup = InlineKeyboardMarkup(channel_keyboard)
 
                 try:
@@ -159,7 +154,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"Deep link notification failed: {e}")
                 await update.message.reply_text("माफ़ करना, चैनल से जुड़ने/सूचना भेजने में त्रुटि हुई। सुनिश्चित करें कि बॉट चैनल का एडमिन है और सही अनुमतियाँ (permissions) प्राप्त हैं।")
     
-    # --- REGULAR START MENU (Stylish Buttons) ---
+    # --- REGULAR START MENU ---
     keyboard = [
         [
             InlineKeyboardButton("🔗 अपनी लिंक बनाएँ", callback_data='start_channel_conv'),
@@ -190,13 +185,12 @@ async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parsed = parse_poll_from_text(" ".join(context.args))
 
     if not parsed:
-        await update.message.reply_text(
+        return await update.message.reply_text(
             "कृपया सही फॉर्मेट का उपयोग करें:\n"
             "`/poll [सवाल]? [ऑप्शन1], [ऑप्शन2], ...`\n"
             "कम से कम 2 और अधिकतम 10 ऑप्शन दें।",
             parse_mode='Markdown'
         )
-        return
 
     question, options = parsed
     try:
@@ -250,6 +244,7 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # 2. सफलता: INSTANT UNIQUE LINK बनाएं
             raw_id_str = str(chat_info.id)
+            # -100 को हटाकर payload के लिए साफ ID प्राप्त करें
             link_channel_id = raw_id_str[4:] if raw_id_str.startswith('-100') else raw_id_str.replace('-', '')
 
             deep_link_payload = f"link_{link_channel_id}"
@@ -316,7 +311,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ----------------------------------------
-# Vote Handler (अत्यधिक त्रुटि सहिष्णुता के साथ संशोधित)
+# 🎯 Vote Handler (अत्यधिक त्रुटि सहिष्णुता के साथ संशोधित)
 # ----------------------------------------
 async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -326,63 +321,60 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     match = re.match(r'vote_(-?\d+)', data)
     
     if not match:
-        await query.answer(text="❌ त्रुटि: वोट ID सही नहीं है।", show_alert=True)
-        return
+        return await query.answer(text="❌ त्रुटि: वोट ID सही नहीं है।", show_alert=True)
 
     channel_id_numeric = int(match.group(1))
     user_id = query.from_user.id
     
     # 2. One-Time Vote Logic Check
     if VOTES_TRACKER[user_id].get(channel_id_numeric, False):
-        await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
-        return
+        return await query.answer(text="🗳️ आप पहले ही इस पोस्ट पर वोट कर चुके हैं।", show_alert=True)
         
-    # 3. यूज़र का सब्सक्रिप्शन स्टेटस चेक करें
+    # 3. यूज़र का सब्सक्रिप्शन स्टेटस चेक करें (सबसे महत्वपूर्ण सेक्शन)
     is_subscriber = False
     channel_url = None
     
     try:
+        # A. चैट की जानकारी प्राप्त करें
         chat_info = await context.bot.get_chat(chat_id=channel_id_numeric)
         channel_url = chat_info.invite_link or f"https://t.me/{chat_info.username}" if chat_info.username else None
         
+        # B. सदस्यता की स्थिति जाँचें
         chat_member = await context.bot.get_chat_member(chat_id=channel_id_numeric, user_id=user_id)
         is_subscriber = chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
         
     except (Forbidden, BadRequest) as e:
-        # अगर बॉट एडमिन है लेकिन 'Manage Users' की अनुमति नहीं है।
+        # यह त्रुटि अक्सर तब आती है जब बॉट के पास 'Manage Users' की अनुमति नहीं होती
         logging.error(f"Bot failed to check subscriber status for {channel_id_numeric}: {e}")
         
-        # एडमिन के लिए स्पष्ट अलर्ट (यह अप्रत्याशित त्रुटि नहीं है)
+        # एडमिन के लिए स्पष्ट अलर्ट (यूज़र को 'अप्रत्याशित त्रुटि' से बचाना)
         return await query.answer(
             text="🚨 वोटिंग त्रुटि: बॉट सदस्यता जाँचने में असमर्थ है। कृपया सुनिश्चित करें कि बॉट के पास **'उपयोगकर्ताओं को प्रबंधित करें' (Manage Users)** की अनुमति है।",
             show_alert=True
         )
     except Exception as e:
         # किसी भी अन्य अप्रत्याशित API त्रुटि को पकड़ें
-        logging.exception(f"Unknown API error during subscription check for {channel_id_numeric}")
-        # यहाँ एक सामान्य API त्रुटि संदेश दें, क्योंकि हम कारण नहीं जानते
+        logging.exception(f"Critical error during subscription check for {channel_id_numeric}")
+        # यहाँ सबसे सामान्य (generic) त्रुटि संदेश दें
         return await query.answer(
-            text="⚠️ नेटवर्क त्रुटि या API विफलता हुई। कृपया दोबारा प्रयास करें।",
+            text="⚠️ अप्रत्याशित त्रुटि हुई। कृपया दोबारा प्रयास करें या चैनल एडमिन से संपर्क करें।",
             show_alert=True
         )
 
-    # 4. वोटिंग लॉजिक
-    
+    # 4. सदस्यता नहीं है तो बाहर निकलें
     if not is_subscriber:
-        # अगर सब्सक्राइबर नहीं है
-        await query.answer(
+        return await query.answer(
             text="❌ आप वोट नहीं कर सकते। कृपया पहले चैनल को सब्सक्राइब करें।", 
             show_alert=True,
             url=channel_url if channel_url else None
         )
-        return
     
-    # 5. सफल वोट दर्ज करें
+    # 5. सफल वोट दर्ज करें (डेटाबेस अपडेट)
     VOTES_TRACKER[user_id][channel_id_numeric] = True
     VOTES_COUNT[channel_id_numeric] += 1
     current_vote_count = VOTES_COUNT[channel_id_numeric]
     
-    # 6. यूज़र को सफलता अलर्ट दें (यह सबसे महत्वपूर्ण है, पहले हो जाना चाहिए)
+    # 6. यूज़र को सफलता अलर्ट दें (यह सबसे महत्वपूर्ण है)
     await query.answer(text=f"✅ आपका वोट ({current_vote_count}वां) दर्ज कर लिया गया है। धन्यवाद!", show_alert=True)
     
     # 7. बटन को नए वोट काउंट के साथ अपडेट करें (अतिरिक्त सुरक्षा के साथ)
@@ -395,7 +387,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_row = []
                 for button in row:
                     if button.callback_data and button.callback_data.startswith('vote_'):
-                        # बटन टेक्स्ट अपडेट करें
                         new_button_text = f"✅ Vote Now ({current_vote_count} Votes)"
                         new_row.append(InlineKeyboardButton(new_button_text, callback_data=button.callback_data))
                     else:
@@ -408,7 +399,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(reply_markup=new_markup)
         
     except BadRequest as e:
-        # अक्सर 'Message is not modified' या 'Message not found' की त्रुटि आती है
+        # 'Message is not modified' या 'Message not found' जैसी सामान्य त्रुटियों को नज़रअंदाज़ करें
         logging.info(f"Button edit failed (Expected: 'not modified' or 'not found'): {e}")
     except Exception as e:
         # बटन एडिट करने में कोई भी अन्य अप्रत्याशित त्रुटि
