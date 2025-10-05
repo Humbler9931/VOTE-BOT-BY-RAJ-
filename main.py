@@ -150,16 +150,24 @@ async def check_user_membership(context: ContextTypes.DEFAULT_TYPE, channel_id: 
         channel_url = await get_channel_url(context, channel_id) # Ensure chat is managed/fetched
         
         chat_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        is_member = chat_member.status in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]
+        # FIX 5: Added ChatMemberStatus.RESTRICTED and ChatMemberStatus.OWNER for complete membership check
+        is_member = chat_member.status in [
+            ChatMemberStatus.MEMBER, 
+            ChatMemberStatus.ADMINISTRATOR, 
+            ChatMemberStatus.CREATOR,
+            ChatMemberStatus.RESTRICTED, # Restricted members are still considered members for voting.
+            ChatMemberStatus.OWNER
+        ]
         
         # Update cache
         MEMBERSHIP_CACHE[user_id][channel_id] = (is_member, current_time)
         
-        logger.info(f"Membership check for user {user_id} in channel {channel_id}: {is_member}")
+        logger.info(f"Membership check for user {user_id} in channel {channel_id}: {is_member}, Status: {chat_member.status}")
         return is_member, channel_url
         
     except (Forbidden, BadRequest) as e:
         logger.error(f"Membership check failed for {channel_id}: {e}")
+        # If the bot is not admin or the user is not found (which happens if they are not a member of a private channel), assume not a member.
         return False, None
     except Exception as e:
         logger.exception(f"Critical error during membership check for {channel_id}")
@@ -587,19 +595,15 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in VOTES_TRACKER[user_id].get(channel_id_numeric, {}):
         return await query.answer(text="🗳️ आप पहले ही वोट कर चुके हैं!", show_alert=True)
     
-    # Check membership (with cache)
-    is_subscriber, channel_url = await check_user_membership(context, channel_id_numeric, user_id, use_cache=True)
+    # FIX 6: Invalidate cache immediately and perform check without cache to ensure fresh membership data.
+    invalidate_membership_cache(user_id, channel_id_numeric)
+    is_subscriber, channel_url = await check_user_membership(context, channel_id_numeric, user_id, use_cache=False)
     
     if not is_subscriber:
-        # Invalidate cache and check again (in case they just joined)
-        invalidate_membership_cache(user_id, channel_id_numeric)
-        is_subscriber, channel_url = await check_user_membership(context, channel_id_numeric, user_id, use_cache=False)
-        
-        if not is_subscriber:
-            return await query.answer(
-                text="❌ वोट करने के लिए पहले चैनल join करें!", 
-                show_alert=True
-            )
+        return await query.answer(
+            text="❌ वोट करने के लिए पहले चैनल join करें! (या सुनिश्चित करें कि बॉट के पास 'Manage Users' की अनुमति है)", 
+            show_alert=True
+        )
     
     # Register vote
     VOTES_TRACKER[user_id][channel_id_numeric][message_id] = datetime.now()
