@@ -148,7 +148,7 @@ async def check_user_membership(context: ContextTypes.DEFAULT_TYPE, channel_id: 
         
         chat_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
         
-        # FIX 7: Including all valid membership statuses to handle different types of channel members
+        # FIXED: Including all valid membership statuses
         is_member = chat_member.status in [
             ChatMemberStatus.MEMBER, 
             ChatMemberStatus.ADMINISTRATOR, 
@@ -164,6 +164,7 @@ async def check_user_membership(context: ContextTypes.DEFAULT_TYPE, channel_id: 
         return is_member, channel_url
         
     except (Forbidden, BadRequest) as e:
+        # A common reason for BadRequest here is 'User not found in chat', which means they are not a member
         logger.error(f"Membership check failed for {channel_id}: {e}")
         return False, None
     except Exception as e:
@@ -181,11 +182,11 @@ def invalidate_membership_cache(user_id: int, channel_id: int):
 # ============================================================================
 
 def create_vote_markup(channel_id: int, message_id: int, current_vote_count: int, channel_url: Optional[str] = None) -> InlineKeyboardMarkup:
-    """Create inline keyboard with vote button and channel link."""
+    """Create inline keyboard with vote button (no channel link)."""
     logger.debug(f"Creating vote markup for channel {channel_id}, message {message_id} with count {current_vote_count}.")
     vote_callback_data = f'vote_{channel_id}_{message_id}'
     
-    # FIX 8: Changed button text to desired emoji format
+    # FIXED: Updated button text to use the desired emoji format
     vote_button_text = f"🗳️ Vote Now ({current_vote_count})"
 
     channel_keyboard: List[List[InlineKeyboardButton]] = []
@@ -194,7 +195,7 @@ def create_vote_markup(channel_id: int, message_id: int, current_vote_count: int
         InlineKeyboardButton(vote_button_text, callback_data=vote_callback_data)
     ])
     
-    # FIX 9: Removed 'Go to Channel' button logic
+    # NOTE: 'Go to Channel' button removed as requested.
     
     return InlineKeyboardMarkup(channel_keyboard)
 
@@ -202,8 +203,7 @@ async def update_vote_markup(context: ContextTypes.DEFAULT_TYPE, query: Any, cha
     """Update inline keyboard with new vote count."""
     logger.info(f"Attempting to update vote markup for message {query.message.message_id} in chat {query.message.chat.id}.")
 
-    # Channel URL is no longer needed in the markup, but we keep the logic simple.
-    # We can fetch the URL just in case, though it won't be used in create_vote_markup.
+    # URL is fetched just to maintain the function signature, but won't be used in markup generation now.
     channel_url = await get_channel_url(context, channel_id_numeric)
 
     new_markup = create_vote_markup(channel_id_numeric, message_id, current_vote_count, channel_url)
@@ -218,7 +218,6 @@ async def update_vote_markup(context: ContextTypes.DEFAULT_TYPE, query: Any, cha
         elif "Message to edit not found" in e.message:
             logger.warning("Markup update: Message not found.")
         else:
-            # FIX 10: Log the exact error for debugging "render" issues (like button text too long)
             logger.error(f"Markup update failed (BadRequest): {e.message}")
     except Exception as e:
         logger.exception(f"Critical error while editing button: {e}")
@@ -294,6 +293,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 current_vote_count = 0
                 dummy_message_id = 1 
+                # Use the updated markup function
                 channel_markup = create_vote_markup(target_channel_id_numeric, dummy_message_id, current_vote_count, channel_url)
 
                 try:
@@ -562,14 +562,13 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in VOTES_TRACKER[user_id].get(channel_id_numeric, {}):
         return await query.answer(text="🗳️ आप पहले ही वोट कर चुके हैं!", show_alert=True)
     
-    # FIX 11: Ensure fresh membership check by invalidating cache and using use_cache=False
+    # CRITICAL FIX: Invalidate cache and use use_cache=False to get the absolute latest status from Telegram API
     invalidate_membership_cache(user_id, channel_id_numeric)
     is_subscriber, channel_url = await check_user_membership(context, channel_id_numeric, user_id, use_cache=False)
     
     if not is_subscriber:
-        # FIX 12: More informative error message for the user.
         return await query.answer(
-            text="❌ वोट करने के लिए आपको पहले चैनल join करना होगा!", 
+            text="❌ वोट करने के लिए आपको पहले चैनल join करना होगा! (कृपया सुनिश्चित करें कि आप चैनल में सक्रिय सदस्य हैं)", 
             show_alert=True
         )
     
@@ -738,7 +737,6 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     """Log errors and handle gracefully."""
     logger.error(f"Exception while handling update: {context.error}")
     
-    # Do not spam error message on silent errors like "Message not modified"
     if isinstance(context.error, BadRequest) and "Message is not modified" in str(context.error):
         return
 
