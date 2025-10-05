@@ -3,7 +3,7 @@ import re
 import logging
 import asyncio
 from datetime import datetime, timedelta
-from dotenv import load_dotenv # FIX 1: Corrected typo
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Chat
 from telegram.ext import (
     ApplicationBuilder,
@@ -21,7 +21,7 @@ from telegram.error import BadRequest, Forbidden
 from typing import Tuple, Optional, Dict, List, Any, Set
 
 # Load environment variables
-load_dotenv() # FIX 1: Corrected typo
+load_dotenv()
 
 # ============================================================================
 # 0. Configuration & Global State Management
@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 # Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 IMAGE_URL = os.getenv("IMAGE_URL", "https://picsum.photos/600/300")
-# Using a log channel ID is generally more reliable than a username
 LOG_CHANNEL_USERNAME = os.getenv("LOG_CHANNEL_USERNAME", "@databasefilebots")
 
 # Conversation States
@@ -56,8 +55,7 @@ CACHE_DURATION = timedelta(minutes=5)
 # Managed channels: {channel_id: Chat object}
 MANAGED_CHANNELS: Dict[int, Chat] = {}
 
-# Message tracking: {channel_id: {message_id: (chat_id, message_id)}} - Redundant in channel, but kept for future proofing
-# For channel messages, chat_id == channel_id. message_id is the original message ID.
+# Message tracking: {channel_id: {message_id: (chat_id, message_id)}}
 VOTE_MESSAGES: Dict[int, Dict[int, Tuple[int, int]]] = defaultdict(lambda: defaultdict(lambda: (0, 0)))
 
 # ============================================================================
@@ -104,8 +102,7 @@ async def is_bot_admin_with_permissions(context: ContextTypes.DEFAULT_TYPE, chan
                 return True
             else:
                 logger.warning(f"Bot is admin but missing 'Manage Users' or 'Post Messages' in {channel_id}.")
-                # FIX 2: Return True for admin status but warn about missing permissions
-                return False # Changed to False as the *required* permissions are the point.
+                return False
 
         logger.info(f"Bot is not an admin in {channel_id}. Status: {status}")
         return False
@@ -147,15 +144,16 @@ async def check_user_membership(context: ContextTypes.DEFAULT_TYPE, channel_id: 
     
     # Perform actual check
     try:
-        channel_url = await get_channel_url(context, channel_id) # Ensure chat is managed/fetched
+        channel_url = await get_channel_url(context, channel_id)
         
         chat_member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-        # FIX 5: Added ChatMemberStatus.RESTRICTED and ChatMemberStatus.OWNER for complete membership check
+        
+        # FIX 7: Including all valid membership statuses to handle different types of channel members
         is_member = chat_member.status in [
             ChatMemberStatus.MEMBER, 
             ChatMemberStatus.ADMINISTRATOR, 
             ChatMemberStatus.CREATOR,
-            ChatMemberStatus.RESTRICTED, # Restricted members are still considered members for voting.
+            ChatMemberStatus.RESTRICTED, 
             ChatMemberStatus.OWNER
         ]
         
@@ -167,7 +165,6 @@ async def check_user_membership(context: ContextTypes.DEFAULT_TYPE, channel_id: 
         
     except (Forbidden, BadRequest) as e:
         logger.error(f"Membership check failed for {channel_id}: {e}")
-        # If the bot is not admin or the user is not found (which happens if they are not a member of a private channel), assume not a member.
         return False, None
     except Exception as e:
         logger.exception(f"Critical error during membership check for {channel_id}")
@@ -187,7 +184,9 @@ def create_vote_markup(channel_id: int, message_id: int, current_vote_count: int
     """Create inline keyboard with vote button and channel link."""
     logger.debug(f"Creating vote markup for channel {channel_id}, message {message_id} with count {current_vote_count}.")
     vote_callback_data = f'vote_{channel_id}_{message_id}'
-    vote_button_text = f"✅ Vote Now ({current_vote_count} Votes)"
+    
+    # FIX 8: Changed button text to desired emoji format
+    vote_button_text = f"🗳️ Vote Now ({current_vote_count})"
 
     channel_keyboard: List[List[InlineKeyboardButton]] = []
     
@@ -195,10 +194,7 @@ def create_vote_markup(channel_id: int, message_id: int, current_vote_count: int
         InlineKeyboardButton(vote_button_text, callback_data=vote_callback_data)
     ])
     
-    if channel_url:
-        channel_keyboard.append([
-            InlineKeyboardButton("➡️ Go to Channel", url=channel_url)
-        ])
+    # FIX 9: Removed 'Go to Channel' button logic
     
     return InlineKeyboardMarkup(channel_keyboard)
 
@@ -206,22 +202,9 @@ async def update_vote_markup(context: ContextTypes.DEFAULT_TYPE, query: Any, cha
     """Update inline keyboard with new vote count."""
     logger.info(f"Attempting to update vote markup for message {query.message.message_id} in chat {query.message.chat.id}.")
 
-    channel_url = None
-    
-    # Extract channel URL from existing markup to preserve it
-    original_markup = query.message.reply_markup
-    if original_markup and original_markup.inline_keyboard:
-        for row in original_markup.inline_keyboard:
-            for button in row:
-                if button.url and "Go to Channel" in button.text:
-                    channel_url = button.url
-                    break
-            if channel_url:
-                break
-    
-    # If URL wasn't in markup, try to fetch it from managed channels
-    if not channel_url and channel_id_numeric in MANAGED_CHANNELS:
-        channel_url = await get_channel_url(context, channel_id_numeric)
+    # Channel URL is no longer needed in the markup, but we keep the logic simple.
+    # We can fetch the URL just in case, though it won't be used in create_vote_markup.
+    channel_url = await get_channel_url(context, channel_id_numeric)
 
     new_markup = create_vote_markup(channel_id_numeric, message_id, current_vote_count, channel_url)
     
@@ -235,7 +218,8 @@ async def update_vote_markup(context: ContextTypes.DEFAULT_TYPE, query: Any, cha
         elif "Message to edit not found" in e.message:
             logger.warning("Markup update: Message not found.")
         else:
-            logger.error(f"Markup update failed: {e.message}")
+            # FIX 10: Log the exact error for debugging "render" issues (like button text too long)
+            logger.error(f"Markup update failed (BadRequest): {e.message}")
     except Exception as e:
         logger.exception(f"Critical error while editing button: {e}")
 
@@ -258,7 +242,6 @@ async def send_start_message(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if update.message:
             await update.message.reply_text(welcome_message, parse_mode='Markdown', reply_markup=reply_markup)
         else:
-             # Handle case where start is called via deep link and update.message is None
              await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=welcome_message,
@@ -281,11 +264,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if match:
             channel_id_str = match.groups()[0]
-            # Telegram channel IDs are always -100xxxxxxxxxx
             target_channel_id_numeric = int(f"-100{channel_id_str}")
             
             try:
-                # Fetch and cache chat info
                 chat_info = await context.bot.get_chat(chat_id=target_channel_id_numeric)
                 MANAGED_CHANNELS[target_channel_id_numeric] = chat_info
                 
@@ -296,7 +277,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✨ **Welcome to {channel_title}!** 🎉\n\n"
                     f"आप चैनल **`{channel_title}`** से सफलतापूर्वक जुड़ गए हैं।\n"
                     f"अब आप चैनल में वोटिंग में भाग ले सकते हैं।\n\n"
-                    f"**👉 वोट करने के लिए, चैनल में जाएं और पोस्ट पर 'Vote Now' बटन दबाएं।**",
+                    f"**👉 वोट करने के लिए, चैनल में जाएं और पोस्ट पर '🗳️ Vote Now' बटन दबाएं।**",
                     parse_mode='Markdown'
                 )
 
@@ -311,9 +292,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🤖 **Via Bot:** @{bot_username}"
                 )
 
-                # Initialize vote count for the *new* message
                 current_vote_count = 0
-                # Use a dummy message_id for initial markup, it will be updated.
                 dummy_message_id = 1 
                 channel_markup = create_vote_markup(target_channel_id_numeric, dummy_message_id, current_vote_count, channel_url)
 
@@ -328,11 +307,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     
                     actual_message_id = sent_message.message_id
                     
-                    # FIX 3: Store message ID mapping and initialize vote count for the *actual* message ID
                     VOTE_MESSAGES[target_channel_id_numeric][actual_message_id] = (target_channel_id_numeric, actual_message_id)
                     VOTES_COUNT[target_channel_id_numeric][actual_message_id] = 0
                     
-                    # Update markup with correct message ID (necessary if the dummy ID was used)
+                    # Update markup with correct message ID
                     updated_markup = create_vote_markup(target_channel_id_numeric, actual_message_id, current_vote_count, channel_url)
                     await context.bot.edit_message_reply_markup(
                         chat_id=target_channel_id_numeric,
@@ -383,7 +361,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def create_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Create a simple Telegram poll."""
-    # Ensure this is in a private chat or a group where polls are allowed
     if update.effective_chat.type not in ["private", "group", "supergroup"]:
         return await update.message.reply_text("यह कमांड केवल निजी चैट या समूह में काम करता है।")
 
@@ -441,7 +418,6 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"User {user.id} sent channel ID input: {channel_id_input}")
 
-    # ID normalization
     if re.match(r'^-?\d+$', channel_id_input):
         channel_id: int | str = int(channel_id_input)
     else:
@@ -449,11 +425,8 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         bot_user = await context.bot.get_me()
-        
-        # Get chat info (needed before admin check for ID resolution)
         chat_info = await context.bot.get_chat(chat_id=channel_id)
         
-        # Bot admin check
         if not await is_bot_admin_with_permissions(context, chat_info.id, bot_user.id):
             await update.message.reply_text(
                 "❌ मैं आपके चैनल का **एडमिन नहीं** हूँ या मेरे पास **'Manage Users'** और **'Post Messages'** की **अनुमति नहीं** है।\n\n"
@@ -467,16 +440,13 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return GET_CHANNEL_ID
         
-        # Create deep link
         raw_id_str = str(chat_info.id)
-        # Deep link needs the part after -100
         link_channel_id = raw_id_str[4:] if raw_id_str.startswith('-100') else raw_id_str.replace('-', '')
 
         deep_link_payload = f"link_{link_channel_id}"
         share_url = f"https://t.me/{bot_user.username}?start={deep_link_payload}"
         channel_title = chat_info.title
         
-        # Show link to user
         await update.message.reply_text(
             f"✅ **चैनल Successfully Connected!**\n\n"
             f"📺 **Channel:** `{channel_title}`\n"
@@ -499,7 +469,6 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=share_markup
         )
         
-        # Log notification
         if LOG_CHANNEL_USERNAME:
             log_message = (
                 f"**🔗 New Channel Linked!**\n\n"
@@ -517,7 +486,6 @@ async def get_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as log_err:
                 logger.error(f"Failed to send log: {log_err}")
         
-        # Add to managed channels
         MANAGED_CHANNELS[chat_info.id] = chat_info
 
         logger.info(f"Link generation successful for channel {chat_info.id}.")
@@ -579,7 +547,6 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voting with membership check and auto-removal on leave."""
     query = update.callback_query
     
-    # Extract Channel ID and Message ID
     data = query.data
     match = re.match(r'vote_(-?\d+)_(\d+)', data)
     
@@ -595,13 +562,14 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message_id in VOTES_TRACKER[user_id].get(channel_id_numeric, {}):
         return await query.answer(text="🗳️ आप पहले ही वोट कर चुके हैं!", show_alert=True)
     
-    # FIX 6: Invalidate cache immediately and perform check without cache to ensure fresh membership data.
+    # FIX 11: Ensure fresh membership check by invalidating cache and using use_cache=False
     invalidate_membership_cache(user_id, channel_id_numeric)
     is_subscriber, channel_url = await check_user_membership(context, channel_id_numeric, user_id, use_cache=False)
     
     if not is_subscriber:
+        # FIX 12: More informative error message for the user.
         return await query.answer(
-            text="❌ वोट करने के लिए पहले चैनल join करें! (या सुनिश्चित करें कि बॉट के पास 'Manage Users' की अनुमति है)", 
+            text="❌ वोट करने के लिए आपको पहले चैनल join करना होगा!", 
             show_alert=True
         )
     
@@ -616,7 +584,7 @@ async def handle_vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Update button
     await update_vote_markup(context, query, channel_id_numeric, message_id, current_vote_count)
     
-    # Schedule membership re-check via Job Queue (More reliable than a naked asyncio task)
+    # Schedule membership re-check via Job Queue
     context.job_queue.run_once(
         lambda ctx: schedule_membership_recheck(ctx, user_id, channel_id_numeric, message_id),
         when=timedelta(minutes=5),
@@ -640,7 +608,6 @@ async def my_polls_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message = "**📊 Your Voting Dashboard**\n━━━━━━━━━━━━━━━━━━━━\n\n"
     
-    # Voted channels
     user_votes = VOTES_TRACKER[user_id]
     if user_votes:
         total_votes = sum(len(messages) for messages in user_votes.values())
@@ -656,11 +623,10 @@ async def my_polls_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         message += "**🗳️ आपने अभी तक कोई वोट नहीं किया है।**\n\n"
 
-    # Managed channels (for admins) - NOTE: This only shows channels added via the /start flow
     if MANAGED_CHANNELS:
         message += "\n**👑 Managed Channels:**\n"
         for c_id, chat in MANAGED_CHANNELS.items():
-            total_channel_votes = VOTES_COUNT.get(c_id, {}).get(0, 0) # Simple total, might need refinement for multiple posts
+            total_channel_votes = VOTES_COUNT.get(c_id, {}).get(0, 0)
             message += f"• [{chat.title}](https://t.me/{chat.username if chat.username else 'private'})\n"
             message += f"  └─ Total tracked votes: {total_channel_votes}\n"
     
@@ -750,15 +716,12 @@ async def cleanup_old_cache(context: ContextTypes.DEFAULT_TYPE):
     cleaned = 0
     
     for user_id in list(MEMBERSHIP_CACHE.keys()):
-        # Use a copy of keys to allow deletion during iteration
         for channel_id in list(MEMBERSHIP_CACHE[user_id].keys()):
             _, last_check = MEMBERSHIP_CACHE[user_id][channel_id]
-            # Clean entries twice as old as the cache duration
             if current_time - last_check > CACHE_DURATION * 2: 
                 del MEMBERSHIP_CACHE[user_id][channel_id]
                 cleaned += 1
         
-        # Remove empty user entries
         if not MEMBERSHIP_CACHE[user_id]:
             del MEMBERSHIP_CACHE[user_id]
     
@@ -800,7 +763,6 @@ def configure_bot_application() -> ApplicationBuilder:
         logger.critical("BOT_TOKEN is missing. Aborting startup.")
         raise ValueError("BOT_TOKEN environment variable is not set.")
 
-    # Use JobQueue for reliable background tasks
     job_queue = JobQueue()
     return ApplicationBuilder().token(BOT_TOKEN).job_queue(job_queue)
 
@@ -817,17 +779,15 @@ def main():
     application.add_handler(CommandHandler("poll", create_poll))
     application.add_handler(CommandHandler("status", check_bot_status))
     application.add_handler(CommandHandler("help", show_help))
-    application.add_handler(CommandHandler("cancel", cancel, filters=filters.ChatType.PRIVATE)) # Allow /cancel globally for simplicity
+    application.add_handler(CommandHandler("cancel", cancel, filters=filters.ChatType.PRIVATE))
 
     # Callback Query Handlers
-    # FIX 4: Corrected unbalanced parentheses in regex pattern
     application.add_handler(CallbackQueryHandler(handle_vote, pattern=r'^vote_(-?\d+)_(\d+)$'))
     application.add_handler(CallbackQueryHandler(my_polls_list, pattern='^my_polls_list$'))
 
     # Conversation Handler for Link Generation
     link_conv_handler = ConversationHandler(
         entry_points=[
-            # FIX 4: Corrected unbalanced parentheses in pattern
             CallbackQueryHandler(start_channel_poll_conversation_cb, pattern='^start_channel_conv$'),
         ],
         states={
@@ -851,14 +811,6 @@ def main():
 
     logger.info("=" * 50)
     logger.info("🚀 Advanced Voting Bot Started Successfully!")
-    logger.info("=" * 50)
-    logger.info("Features Enabled:")
-    logger.info("  ✅ Auto vote removal on channel leave (JobQueue)")
-    logger.info("  ✅ Membership caching (5 min)")
-    logger.info("  ✅ One vote per user per post")
-    logger.info("  ✅ Real-time vote tracking")
-    logger.info("  ✅ Advanced error handling")
-    logger.info("  ✅ Background cache cleanup (JobQueue)")
     logger.info("=" * 50)
     
     application.run_polling(poll_interval=2, allowed_updates=Update.ALL_TYPES)
